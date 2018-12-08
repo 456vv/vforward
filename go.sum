@@ -1,0 +1,6 @@
+github.com/456vv/vconn v1.0.0 h1:oTFrX77deKS7wuk3BTHQbXuHi63M/4guG26JROog+wY=
+github.com/456vv/vconn v1.0.0/go.mod h1:82B8d4Yv+vbcLZ30sCQ/GMDm5ZqlB+Rh+1o4i4hCtHM=
+github.com/456vv/vconnpool v1.0.0 h1:c5GyrTucsfKJ7+3GpQ2kC7c4LWbvO+yXCdadxcnL/iM=
+github.com/456vv/vconnpool v1.0.0/go.mod h1:xz5JzTwr8tRu2tWKfhBAii5AEb9lpd335dTZBsVhSoI=
+github.com/456vv/vmap/v2 v2.0.0 h1:cbFe9XuiFVIM9MMmG+jY6CfBK9oWcOEE6+i26gXy5bk=
+github.com/456vv/vmap/v2 v2.0.0/go.mod h1:geFop2M5cQZuO1wo/Rjec3F9JNqx3CrjB2JoYOFBfik=
