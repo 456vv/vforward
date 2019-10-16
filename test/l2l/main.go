@@ -7,7 +7,7 @@ import (
     "log"
     "fmt"
 )
-var fBackstage		= flag.Bool("Backstage", false, "后台启动进程")
+var fHide			= flag.Bool("Hide", false, "不显示打印信息")
 
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 var fALocal 		= flag.String("ALocal", "", "A本地监听网卡IP地址 (format \"12.13.14.15:123\")")
@@ -70,7 +70,7 @@ func main(){
         return
     }
     
-    if !*fBackstage {
+    if !*fHide {
 	    go func(){
 	        defer lls.Close()
 	        log.Println("L2L启动了")
@@ -80,7 +80,6 @@ func main(){
 	            log.Println("输入任何字符，并回车可以退出L2L!")
 	            fmt.Scan(&in0)
 	            if in0 != "" {
-    				log.Println("L2L退出了")
 	                return
 	            }
 	        }
@@ -91,4 +90,5 @@ func main(){
     if err != nil {
         log.Println("错误：%s", err)
     }
+    log.Println("L2L退出了")
 }
