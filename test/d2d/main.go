@@ -8,8 +8,8 @@ import (
     "flag"
     "fmt"
 )
+var fBackstage		= flag.Bool("Backstage", false, "后台启动进程")
 
-var fHide			= flag.Bool("Hide", false, "不显示打印信息")
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 
 var fALocal 		= flag.String("ALocal", "0.0.0.0", "A端本地发起连接地址")
@@ -89,7 +89,7 @@ func main(){
         return
     }
     
-    if !*fHide {
+    if !*fBackstage {
 	    go func(){
 	        defer dd.Close()
 	        log.Println("D2D启动了")
@@ -99,6 +99,7 @@ func main(){
 	            log.Println("输入任何字符，并回车可以退出D2D!")
 	            fmt.Scan(&in0)
 	            if in0 != "" {
+    				log.Println("D2D退出了")
 	                return
 	            }
 	        }
@@ -109,5 +110,4 @@ func main(){
     if err != nil {
         log.Println("错误：%s", err)
     }
-    log.Println("D2D退出了")
 }

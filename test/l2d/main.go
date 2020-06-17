@@ -9,7 +9,8 @@ import (
     "fmt"
 )
 
-var fHide			= flag.Bool("Hide", false, "不显示打印信息")
+var fBackstage		= flag.Bool("Backstage", false, "后台启动进程")
+
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 
 var fListen 		= flag.String("Listen", "", "本地网卡监听地址 (format \"0.0.0.0:123\")")
@@ -85,7 +86,7 @@ func main(){
     }
     
     
-    if !*fHide {
+    if !*fBackstage {
 	    go func(){
 	        defer lds.Close()
 	        log.Println("L2D启动了")
@@ -95,6 +96,7 @@ func main(){
 	            log.Println("输入任何字符，并回车可以退出L2D!")
 	            fmt.Scan(&in0)
 	            if in0 != "" {
+    				log.Println("L2D退出了")
 	                return
 	            }
 	        }
@@ -105,5 +107,4 @@ func main(){
     if err != nil {
         log.Println("错误：%s", err)
     }
-    log.Println("L2D退出了")
 }

@@ -119,12 +119,12 @@ func Test_D2D_1(t *testing.T){
     addra := &Addr{
         Network:"tcp",
         Local: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"),Port: 0,},
-        Remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"),Port: 1201,},
+        Remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"),Port: 1203,},
     }
     addrb := &Addr{
         Network:"tcp",
         Local: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"),Port: 0,},
-        Remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"),Port: 1202,},
+        Remote: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"),Port: 1204,},
     }
 
     //服务器

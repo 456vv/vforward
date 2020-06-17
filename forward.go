@@ -34,7 +34,7 @@ func temporaryError(err error, wait time.Duration, maxDelay time.Duration)(time.
 func delay(wait, maxDelay time.Duration) time.Duration {
 	if wait == 0 {
 		wait = (maxDelay/100)
-	} else {
+	}else{
 		wait *= 2
 	}
 	if wait >= maxDelay {

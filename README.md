@@ -91,7 +91,7 @@ type D2D struct {                                                       // D2D�
     MaxConn     int                                                             // 限制连接最大的数量
     KeptIdeConn int                                                             // 保持一方连接数量，以备快速互相连接。
     ReadBufSize int                                                             // 交换数据缓冲大小
-    Timeout     time.Duration           										// 发起连接超时
+    Timeout     time.Duration                                                   // 发起连接超时
     ErrorLog    *log.Logger                                                     // 日志
 }
     func (dd *D2D) Close() error                                                // 关闭

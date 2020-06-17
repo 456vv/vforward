@@ -1,6 +1,6 @@
-github.com/456vv/vconn v1.0.0 h1:oTFrX77deKS7wuk3BTHQbXuHi63M/4guG26JROog+wY=
-github.com/456vv/vconn v1.0.0/go.mod h1:82B8d4Yv+vbcLZ30sCQ/GMDm5ZqlB+Rh+1o4i4hCtHM=
-github.com/456vv/vconnpool v1.0.0 h1:c5GyrTucsfKJ7+3GpQ2kC7c4LWbvO+yXCdadxcnL/iM=
-github.com/456vv/vconnpool v1.0.0/go.mod h1:xz5JzTwr8tRu2tWKfhBAii5AEb9lpd335dTZBsVhSoI=
-github.com/456vv/vmap/v2 v2.0.0 h1:cbFe9XuiFVIM9MMmG+jY6CfBK9oWcOEE6+i26gXy5bk=
-github.com/456vv/vmap/v2 v2.0.0/go.mod h1:geFop2M5cQZuO1wo/Rjec3F9JNqx3CrjB2JoYOFBfik=
+github.com/456vv/vconn v1.0.1 h1:kl6wxMOy2LqXJLRqsOM+wV4/A7nAL1+QlUqZKrDI7rg=
+github.com/456vv/vconn v1.0.1/go.mod h1:9hscPlLw7MQEXB//8cpbpbD/hNYYnYsbdTHmHs+BZOI=
+github.com/456vv/vconnpool v1.1.0 h1:gFxSWme97wLfXE2PLBsnshZh0JRQwilEmJE7AkoKwcc=
+github.com/456vv/vconnpool v1.1.0/go.mod h1:eTD2J7mBlL9j6eMliyU33UCcFW2UJBBWllrCLvQEtes=
+github.com/456vv/vmap/v2 v2.2.4 h1:w8OyF9YJm4f4JrLFGZWmiKEU7T4FV+9tGbCbEY1/8IE=
+github.com/456vv/vmap/v2 v2.2.4/go.mod h1:xnxHTe4fSKfl+sC6HTl2tz7qa3kMnN56VbqugzEY6rU=
