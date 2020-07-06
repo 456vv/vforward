@@ -20,6 +20,8 @@ D2D 命令行：
           B端本地发起连接地址 (default "0.0.0.0")
     -KeptIdeConn int
           保持一方连接数量，以备快速互相连接。 (default 2)
+    -IdeTimeout duration
+        空闲连接超时。单位：ns, us, ms, s, m, h
     -MaxConn int
           限制连接最大的数量 (default 500)
     -Network string
@@ -70,6 +72,8 @@ L2L 命令行：
           B本地监听网卡IP地址 (format "22.23.24.25:234")
     -KeptIdeConn int
           保持一方连接数量，以备快速互相连接。 (default 2)
+    -IdeTimeout duration
+        空闲连接超时。单位：ns, us, ms, s, m, h
     -MaxConn int
           限制连接最大的数量 (default 500)
     -Network string
@@ -87,12 +91,14 @@ type Addr struct {                                                      // 地�
     Local, Remote net.Addr                                                      // 本地，远程
 }
 type D2D struct {                                                       // D2D（内网to内网）
-    TryConnTime time.Duration                                                   // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
-    MaxConn     int                                                             // 限制连接最大的数量
-    KeptIdeConn int                                                             // 保持一方连接数量，以备快速互相连接。
-    ReadBufSize int                                                             // 交换数据缓冲大小
-    Timeout     time.Duration                                                   // 发起连接超时
-    ErrorLog    *log.Logger                                                     // 日志
+    TryConnTime     time.Duration                                               // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
+    MaxConn         int                                                         // 限制连接最大的数量
+    KeptIdeConn     int                                                         // 保持一方连接数量，以备快速互相连接。
+    IdeTimeout      time.Duration                                               // 空闲连接超时
+    ReadBufSize     int                                                         // 交换数据缓冲大小
+    Timeout         time.Duration                                               // 发起连接超时
+    ErrorLog        *log.Logger                                                 // 日志
+    Context         context.Context                                             // 上下文
 }
     func (dd *D2D) Close() error                                                // 关闭
     func (dd *D2D) Transport(a, b *Addr) (*D2DSwap, error)                      // 建立连接
@@ -101,10 +107,11 @@ type D2DSwap struct {}                                                   // D2D�
     func (dds *D2DSwap) ConnNum() int                                           // 当前连接数
     func (dds *D2DSwap) Swap() error                                            // 开始交换
 type L2D struct {                                                        // L2D（端口转发）
-    MaxConn     int                                                             // 限制连接最大的数量
-    ReadBufSize int                                                             // 交换数据缓冲大小
-    Timeout     time.Duration                                                   // 发起连接超时
-    ErrorLog    *log.Logger                                                     // 日志
+    MaxConn         int                                                         // 限制连接最大的数量
+    ReadBufSize     int                                                         // 交换数据缓冲大小
+    Timeout         time.Duration                                               // 发起连接超时
+    ErrorLog        *log.Logger                                                 // 日志
+    Context         context.Context                                             // 上下文
 }
     func (ld *L2D) Close() error                                                // 关闭
     func (ld *L2D) Transport(raddr, laddr *Addr) (*L2DSwap, error)              // 建立连接
@@ -113,10 +120,11 @@ type L2DSwap struct {}                                                    // L2D
     func (lds *L2DSwap) ConnNum() int                                           // 当前连接数
     func (lds *L2DSwap) Swap() error                                            // 开始交换
 type L2L struct {                                                         // L2L（内网to内网）
-    MaxConn     int                                                             // 限制连接最大的数量
-    KeptIdeConn int                                                             // 保持一方连接数量，以备快速互相连接。
-    ReadBufSize int                                                             // 交换数据缓冲大小
-    ErrorLog    *log.Logger                                                     // 日志
+    MaxConn         int                                                         // 限制连接最大的数量
+    KeptIdeConn     int                                                         // 保持一方连接数量，以备快速互相连接。
+    IdeTimeout      time.Duration                                               // 空闲连接超时
+    ReadBufSize     int                                                         // 交换数据缓冲大小
+    ErrorLog        *log.Logger                                                 // 日志
 }
     func (ll *L2L) Close() error                                                // 关闭
     func (ll *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error)              // 建立连接

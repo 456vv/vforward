@@ -6,7 +6,7 @@ import (
     "errors"
     "log"
     "time"
-    "github.com/456vv/vconnpool"
+    "github.com/456vv/vconnpool/v2"
     "github.com/456vv/vmap/v2"
     "fmt"
     "sync/atomic"
@@ -14,55 +14,54 @@ import (
 
 type L2LSwap struct {
     ll              *L2L                    // 引用父结构体 L2L
-    conns           *vmap.Map               // 连接存储，方便关闭已经连接的连接
+    conns           vmap.Map               // 连接存储，方便关闭已经连接的连接
     closed          atomicBool                    // 关闭
     used            atomicBool                    // 正在使用
 }
 //ConnNum 当前正在转发的连接数量
-//  返：
-//      int     实时连接数量
-func (lls *L2LSwap) ConnNum() int {
-    return lls.ll.currUseConns()
+//	int     实时连接数量
+func (T *L2LSwap) ConnNum() int {
+    return T.ll.currUseConns()
 }
 
-func (lls *L2LSwap) Swap() error {
-    if lls.used.setTrue() {
+func (T *L2LSwap) Swap() error {
+    if T.used.setTrue() {
         return errors.New("vforward: 交换数据已经开启不需重复调用")
     }
 
-    lls.closed.setFalse()
+    T.closed.setFalse()
     
-    bufSize := lls.ll.ReadBufSize
-    if lls.ll.ReadBufSize == 0 {
+    bufSize := T.ll.ReadBufSize
+    if bufSize == 0 {
         bufSize = DefaultReadBufSize
     }
 
     var wait, maxDelay time.Duration = 0, time.Second
 
-    for  {
+    for {
         //延时
         wait = delay(wait, maxDelay)
 
         //程序退出
-        if lls.closed.isTrue() {
+        if T.closed.isTrue() {
             return nil
         }
         //如果父级被关闭，则子级也执行关闭
-        if lls.ll.closed.isTrue() {
-            return lls.Close()
+        if T.ll.closed.isTrue() {
+            return T.Close()
         }
-        if lls.ll.acp.ConnNum() > 0 && lls.ll.bcp.ConnNum() > 0 {
-            atomic.AddInt32(&lls.ll.currUseConn, 1)
-            conna, err := lls.ll.aGetConn()
+        if T.ll.acp.ConnNum() > 0 && T.ll.bcp.ConnNum() > 0 {
+            atomic.AddInt32(&T.ll.currUseConn, 1)
+            conna, err := T.ll.aGetConn()
             if err != nil {
-            	atomic.AddInt32(&lls.ll.currUseConn, -1)
+            	atomic.AddInt32(&T.ll.currUseConn, -1)
                 continue
             }
             
-            atomic.AddInt32(&lls.ll.currUseConn, 1)
-            connb, err := lls.ll.bGetConn()
+            atomic.AddInt32(&T.ll.currUseConn, 1)
+            connb, err := T.ll.bGetConn()
             if err != nil {
-            	atomic.AddInt32(&lls.ll.currUseConn, -2)
+            	atomic.AddInt32(&T.ll.currUseConn, -2)
                 conna.Close()
                 continue
             }
@@ -70,31 +69,31 @@ func (lls *L2LSwap) Swap() error {
             wait = 0
             	
             //记录当前连接
-            lls.conns.Set(conna, connb)
+            T.conns.Set(conna, connb)
 
-            go func(conna, connb net.Conn, ll *L2L, lls *L2LSwap, bufSize int){
+            go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
                 copyData(conna, connb, bufSize)
                 conna.Close()
             	atomic.AddInt32(&ll.currUseConn, -1)
-            }(conna, connb, lls.ll, lls, bufSize)
+            }(conna, connb, T.ll, T, bufSize)
 
-            go func(conna, connb net.Conn, ll *L2L, lls *L2LSwap, bufSize int){
+            go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
                 copyData(connb, conna, bufSize)
                 connb.Close()
 
                 //删除记录的连接，如果是以 .Close() 关闭的。不再重复删除。
-                if !lls.closed.isTrue() {
-                    lls.conns.Del(conna)
+                if !T.closed.isTrue() {
+                    T.conns.Del(conna)
                 }
             	atomic.AddInt32(&ll.currUseConn, -1)
-            }(conna, connb, lls.ll, lls, bufSize)
+            }(conna, connb, T.ll, T, bufSize)
         }
     }
     return nil
 }
-func (lls *L2LSwap) Close() error {
-    lls.closed.setTrue()
-    lls.conns.Range(func(k, v interface{}) bool {
+func (T *L2LSwap) Close() error {
+    T.closed.setTrue()
+    T.conns.Range(func(k, v interface{}) bool {
         if c, ok := k.(io.Closer); ok {
             c.Close()
         }
@@ -103,8 +102,8 @@ func (lls *L2LSwap) Close() error {
         }
         return true
     })
-    lls.conns.Reset()
-    lls.used.setFalse()
+    T.conns.Reset()
+    T.used.setFalse()
     return nil
 }
 
@@ -118,6 +117,7 @@ func (lls *L2LSwap) Close() error {
 type L2L struct {
     MaxConn         int                     // 限制连接最大的数量
     KeptIdeConn     int                     // 保持一方连接数量，以备快速互相连接。
+    IdeTimeout      time.Duration           // 空闲连接超时
     ReadBufSize     int                     // 交换数据缓冲大小
     ErrorLog        *log.Logger             // 日志
 
@@ -132,14 +132,18 @@ type L2L struct {
     closed          atomicBool              // 关闭
     used            atomicBool              // 正在使用
 }
-func (ll *L2L) init(){
-    ll.acp.IdeConn=ll.KeptIdeConn
-    ll.bcp.IdeConn=ll.KeptIdeConn
+func (T *L2L) init(){
+	
+    T.acp.IdeConn=T.KeptIdeConn
+    T.bcp.IdeConn=T.KeptIdeConn
+
+    T.acp.IdeTimeout=T.IdeTimeout
+    T.bcp.IdeTimeout=T.IdeTimeout
 }
 
 //当前连接数量
-func (ll *L2L) currUseConns() int {
-    var i int = int(atomic.LoadInt32(&ll.currUseConn))
+func (T *L2L) currUseConns() int {
+    var i int = int(atomic.LoadInt32(&T.currUseConn))
     if i%2 != 0 {
         return (i/2)+1
     }else{
@@ -147,16 +151,15 @@ func (ll *L2L) currUseConns() int {
     }
 }
 
-
 //快速取得连接
-func (ll *L2L) aGetConn() (net.Conn, error) {
-    return ll.acp.Get(ll.alisten.Addr())
+func (T *L2L) aGetConn() (net.Conn, error) {
+    return T.acp.Get(T.alisten.Addr())
 }
-func (ll *L2L) bGetConn() (net.Conn, error) {
-    return ll.bcp.Get(ll.blisten.Addr())
+func (T *L2L) bGetConn() (net.Conn, error) {
+    return T.bcp.Get(T.blisten.Addr())
 }
 
-func (ll *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
+func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
     var tempDelay time.Duration
     var ok bool
     for  {
@@ -165,65 +168,70 @@ func (ll *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
             if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
                 continue
             }
-            ll.logf("L2L.bufConn", "监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
+            T.logf("L2L.bufConn", "监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
             return err
         }
         tempDelay = 0
 
+        //实时变更
+        if cp.IdeTimeout != T.IdeTimeout {
+        	cp.IdeTimeout = T.IdeTimeout
+        }
+
         //1，连接最大限制
         //2，空闲连接限制
-        if ll.currUseConns()+cp.ConnNum() >= ll.MaxConn || cp.ConnNum() >= ll.KeptIdeConn {
+        if (T.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= T.MaxConn) ||  (T.KeptIdeConn != 0 && cp.ConnNum() >= T.KeptIdeConn) {
             conn.Close()
             continue
         }
-        cp.Add(l.Addr(), conn)
+        cp.Put(conn, conn.LocalAddr())
     }
     return nil
 }
+
 //Transport 支持协议类型："tcp", "tcp4","tcp6", "unix" 或 "unixpacket".
 //	aaddr, baddr *Addr  A&B监听地址
 //	*L2LSwap    交换数据
 //	error       错误
-func (ll *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error) {
-    if ll.used.setTrue() {
+func (T *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error) {
+    if T.used.setTrue() {
         return nil, errors.New("vforward: 不能重复调用 L2L.Transport")
     }
-    ll.init()
+    T.init()
     var err error
-    ll.alisten, err = net.Listen(aaddr.Network, aaddr.Local.String())
+    T.alisten, err = net.Listen(aaddr.Network, aaddr.Local.String())
     if err != nil {
-        ll.logf("L2L.Transport监听地址 %s 失败: %v", aaddr.Local.String(), err)
+        T.logf("L2L.Transport监听地址 %s 失败: %v", aaddr.Local.String(), err)
         return nil, err
     }
-    ll.blisten, err = net.Listen(baddr.Network, baddr.Local.String())
+    T.blisten, err = net.Listen(baddr.Network, baddr.Local.String())
     if err != nil {
-        ll.alisten.Close()
-        ll.alisten = nil
-        ll.logf("L2L.Transport监听地址 %s 失败: %v", baddr.Local.String(), err)
+        T.alisten.Close()
+        T.alisten = nil
+        T.logf("L2L.Transport监听地址 %s 失败: %v", baddr.Local.String(), err)
         return nil, err
     }
-    go ll.bufConn(ll.alisten, &ll.acp)
-    go ll.bufConn(ll.blisten, &ll.bcp)
+    go T.bufConn(T.alisten, &T.acp)
+    go T.bufConn(T.blisten, &T.bcp)
 
-    return &L2LSwap{ll:ll, conns:vmap.NewMap()}, nil
+    return &L2LSwap{ll:T}, nil
 }
 
 //Close 关闭L2L
-//  返：
-//      error   错误
-func (ll *L2L) Close() error {
-    ll.closed.setTrue()
-    if ll.alisten != nil {
-        ll.alisten.Close()
+//	error   错误
+func (T *L2L) Close() error {
+    T.closed.setTrue()
+    if T.alisten != nil {
+        T.alisten.Close()
     }
-    if ll.blisten != nil {
-        ll.blisten.Close()
+    if T.blisten != nil {
+        T.blisten.Close()
     }
     return nil
 }
 
-func (ll *L2L) logf(funcName string, format string, v ...interface{}){
-    if ll.ErrorLog != nil{
-        ll.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
+func (T *L2L) logf(funcName string, format string, v ...interface{}){
+    if T.ErrorLog != nil{
+        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
     }
 }
