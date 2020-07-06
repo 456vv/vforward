@@ -22,8 +22,8 @@ var fTryConnTime 	= flag.Duration("TryConnTime", time.Millisecond*500, "尝试�
 var fTimeout 		= flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
 var fMaxConn 		= flag.Int("MaxConn", 500, "限制连接最大的数量")
 var fKeptIdeConn 	= flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
+var fIdeTimeout		= flag.Duration("IdeTimeout", 0, "空闲连接超时。单位：ns, us, ms, s, m, h")
 var fReadBufSize 	= flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
-
 
 //commandline:d2d-main.exe -ARemote 127.0.0.1:1201 -BRemote 127.0.0.1:1202 -Network udp
 func main(){
@@ -79,6 +79,7 @@ func main(){
         TryConnTime: *fTryConnTime,             // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
         MaxConn: *fMaxConn,                     // 限制连接最大的数量
         KeptIdeConn: *fKeptIdeConn,             // 保持一方连接数量，以备快速互相连接。
+        IdeTimeout: *fIdeTimeout,				// 空闲连接超时
         Timeout: *fTimeout,                     // 发起连接超时
         ReadBufSize: *fReadBufSize,             // 交换数据缓冲大小
     }

@@ -14,7 +14,8 @@ var fALocal 		= flag.String("ALocal", "", "A本地监听网卡IP地址 (format \
 var fBLocal 		= flag.String("BLocal", "", "B本地监听网卡IP地址 (format \"22.23.24.25:234\")")
 
 var fMaxConn 		= flag.Int("MaxConn", 500, "限制连接最大的数量")
-var fKeptIdeConn	 = flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
+var fKeptIdeConn	= flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
+var fIdeTimeout		= flag.Duration("IdeTimeout", 0, "空闲连接超时。单位：ns, us, ms, s, m, h")
 var fReadBufSize 	= flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
 
 
@@ -61,6 +62,7 @@ func main(){
     ll := &vforward.L2L{
         MaxConn: *fMaxConn,                     // 限制连接最大的数量
         KeptIdeConn: *fKeptIdeConn,             // 保持一方连接数量，以备快速互相连接。
+        IdeTimeout: *fIdeTimeout,				// 空闲连接超时
         ReadBufSize: *fReadBufSize,             // 交换数据缓冲大小
     }
 	defer ll.Close()
