@@ -394,6 +394,7 @@ func Test_L2L_0(t *testing.T){
         if lls.ConnNum() != ll.MaxConn {
             t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", lls.ConnNum(), ll.MaxConn)
         }
+        time.Sleep(time.Second)
         lls.Close()
         lls.Close()
         exitgo<-true
