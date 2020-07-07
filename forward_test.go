@@ -367,14 +367,10 @@ func Test_L2L_0(t *testing.T){
     if err != nil {
         t.Fatalf("发起请求失败：%s", err)
     }
-
+    defer lls.Close()
+    
     exitgo := make(chan bool,1)
     go func(t *testing.T){
-        defer func(){
-            lls.Close()
-            exitgo<-true
-        }()
-        	
        	//监听端口改变
         addra.Local = ll.alisten.Addr()
         addrb.Local = ll.blisten.Addr()
@@ -398,10 +394,11 @@ func Test_L2L_0(t *testing.T){
         if lls.ConnNum() != ll.MaxConn {
             t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", lls.ConnNum(), ll.MaxConn)
         }
+        time.Sleep(time.Second)
         lls.Close()
         lls.Close()
+        exitgo<-true
     }(t)
-    defer lls.Close()
 
     lls.Swap()
     <-exitgo
@@ -411,11 +408,4 @@ func Test_L2L_0(t *testing.T){
         t.Logf("还有连接没有被关闭。返回为：%d，预计为：0", lls.ConnNum())
     }
 
-    go func(){
-        ll.Close()
-        lls.Close()
-        exitgo<- true
-    }()
-    lls.Swap()
-    <-exitgo
 }

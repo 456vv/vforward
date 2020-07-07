@@ -91,6 +91,6 @@ func main(){
 	defer lls.Close()
     err = lls.Swap()
     if err != nil {
-        log.Println("错误：%s", err)
+        log.Printf("错误：%s\n", err)
     }
 }
