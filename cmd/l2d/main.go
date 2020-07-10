@@ -9,8 +9,6 @@ import (
     "fmt"
 )
 
-var fBackstage		= flag.Bool("Backstage", false, "后台启动进程")
-
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 
 var fListen 		= flag.String("Listen", "", "本地网卡监听地址 (format \"0.0.0.0:123\")")
@@ -19,7 +17,7 @@ var fFromLocal 		= flag.String("FromLocal", "0.0.0.0", "转发请求的源地址
 var fToRemote 		= flag.String("ToRemote", "", "转发请求的目地址 (format \"22.23.24.25:234\")")
 
 var fTimeout 		= flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
-var fMaxConn 		= flag.Int("MaxConn", 500, "限制连接最大的数量")
+var fMaxConn 		= flag.Int("MaxConn", 0, "限制连接最大的数量")
 var fReadBufSize 	= flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
 
 //commandline:l2d-main.exe -Listen 127.0.0.1:1201 -ToRemote 127.0.0.1:1202 -Network tcp
@@ -84,24 +82,7 @@ func main(){
         log.Println(err)
         return
     }
-    
-    
-    if !*fBackstage {
-	    go func(){
-	        defer lds.Close()
-	        log.Println("L2D启动了")
 
-	        var in0 string
-	        for err == nil  {
-	            log.Println("输入任何字符，并回车可以退出L2D!")
-	            fmt.Scan(&in0)
-	            if in0 != "" {
-    				log.Println("L2D退出了")
-	                return
-	            }
-	        }
-	    }()
-	}
 	defer lds.Close()
     err = lds.Swap()
     if err != nil {
