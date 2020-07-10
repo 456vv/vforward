@@ -8,8 +8,6 @@ import (
     "flag"
     "fmt"
 )
-var fBackstage		= flag.Bool("Backstage", false, "后台启动进程")
-
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 
 var fALocal 		= flag.String("ALocal", "0.0.0.0", "A端本地发起连接地址")
@@ -20,7 +18,7 @@ var fBRemote 		= flag.String("BRemote", "", "B端远程请求连接地址 (forma
 
 var fTryConnTime 	= flag.Duration("TryConnTime", time.Millisecond*500, "尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。单位：ns, us, ms, s, m, h")
 var fTimeout 		= flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
-var fMaxConn 		= flag.Int("MaxConn", 500, "限制连接最大的数量")
+var fMaxConn 		= flag.Int("MaxConn", 0, "限制连接最大的数量")
 var fKeptIdeConn 	= flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
 var fIdeTimeout		= flag.Duration("IdeTimeout", 0, "空闲连接超时。单位：ns, us, ms, s, m, h")
 var fReadBufSize 	= flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
@@ -89,23 +87,7 @@ func main(){
         log.Println(err)
         return
     }
-    
-    if !*fBackstage {
-	    go func(){
-	        defer dd.Close()
-	        log.Println("D2D启动了")
 
-	        var in0 string
-	        for err == nil  {
-	            log.Println("输入任何字符，并回车可以退出D2D!")
-	            fmt.Scan(&in0)
-	            if in0 != "" {
-    				log.Println("D2D退出了")
-	                return
-	            }
-	        }
-	    }()
-	}
 	defer dds.Close()
     err = dds.Swap()
     if err != nil {

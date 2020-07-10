@@ -179,7 +179,7 @@ func (T *L2DSwap) keepAvailable() error {
             //1,连接数量超过最大限制
             //2,交换已经关闭
             //3,交换不在使用状态
-            if T.currUseConns() >= T.ld.MaxConn || T.used.isFalse() {
+            if (T.ld.MaxConn != 0 && T.currUseConns() >= T.ld.MaxConn) || T.used.isFalse() {
                 rw.Close()
                 continue
             }
@@ -224,7 +224,7 @@ func (T *L2DSwap) keepAvailable() error {
             //1,连接数量超过最大限制
             //2,交换已经关闭
             //3,交换不在使用状态
-            if T.currUseConns() >= T.ld.MaxConn || T.used.isFalse() {
+            if (T.ld.MaxConn != 0 && T.currUseConns() >= T.ld.MaxConn) || T.used.isFalse() {
                 continue
             }
 

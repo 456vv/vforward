@@ -177,7 +177,10 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
         if cp.IdeTimeout != T.IdeTimeout {
         	cp.IdeTimeout = T.IdeTimeout
         }
-
+        if cp.IdeConn != T.KeptIdeConn {
+        	cp.IdeConn = T.KeptIdeConn
+        }
+        
         //1，连接最大限制
         //2，空闲连接限制
         if (T.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= T.MaxConn) ||  (T.KeptIdeConn != 0 && cp.ConnNum() >= T.KeptIdeConn) {
