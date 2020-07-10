@@ -1,8 +1,8 @@
 set GOOS=windows
 set GOARCH=amd64
-go build -o bin/d2d-win-x64.exe -ldflags="-s -w" d2d/main.go
-go build -o bin/l2d-win-x64.exe -ldflags="-s -w" l2d/main.go
-go build -o bin/l2l-win-x64.exe -ldflags="-s -w" l2l/main.go
+go build -o bin/d2d-win-amd64.exe -ldflags="-s -w" d2d/main.go
+go build -o bin/l2d-win-amd64.exe -ldflags="-s -w" l2d/main.go
+go build -o bin/l2l-win-amd64.exe -ldflags="-s -w" l2l/main.go
 
 set GOOS=linux
 set GOARCH=amd64
