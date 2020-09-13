@@ -23,7 +23,7 @@ D2D 命令行：
     -IdeTimeout duration
         空闲连接超时。单位：ns, us, ms, s, m, h
     -MaxConn int
-          限制连接最大的数量 (default 500)
+          限制连接最大的数量
     -Network string
           网络地址类型 (default "tcp")
     -ReadBufSize int
@@ -47,7 +47,7 @@ L2D
     -Listen string
           本地网卡监听地址 (format "0.0.0.0:123")
     -MaxConn int
-          限制连接最大的数量 (default 500)
+          限制连接最大的数量
     -Network string
           网络地址类型 (default "tcp")
     -ReadBufSize int
@@ -75,7 +75,7 @@ L2L 命令行：
     -IdeTimeout duration
         空闲连接超时。单位：ns, us, ms, s, m, h
     -MaxConn int
-          限制连接最大的数量 (default 500)
+          限制连接最大的数量
     -Network string
           网络地址类型 (default "tcp")
     -ReadBufSize int
