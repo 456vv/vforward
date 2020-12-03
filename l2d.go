@@ -67,10 +67,10 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
     if bufSize == 0 {
         bufSize = DefaultReadBufSize
     }
-
+    
     //记录连接
     T.conns.Set(lconn, rconn)
-
+	
     //开始交换数据
     go func(T *L2DSwap, rconn, lconn net.Conn, bufSize int){
         copyData(rconn, lconn, bufSize)

@@ -89,7 +89,6 @@ func (T *L2LSwap) Swap() error {
             }(conna, connb, T.ll, T, bufSize)
         }
     }
-    return nil
 }
 func (T *L2LSwap) Close() error {
     T.closed.setTrue()
@@ -189,7 +188,6 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
         }
         cp.Put(conn, conn.LocalAddr())
     }
-    return nil
 }
 
 //Transport 支持协议类型："tcp", "tcp4","tcp6", "unix" 或 "unixpacket".

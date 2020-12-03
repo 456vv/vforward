@@ -97,7 +97,6 @@ func (T *D2DSwap) Swap() error {
             atomic.AddInt32(&T.dd.currUseConn, -1)
         }(conna, connb, T.dd, T, bufSize)
     }
-    return nil
 }
 
 //Close 关闭数据交换 .Swap()，你还可以再次使用 .Swap() 启动。
