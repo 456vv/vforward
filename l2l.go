@@ -13,10 +13,11 @@ import (
 )
 
 type L2LSwap struct {
-    ll              *L2L                    // 引用父结构体 L2L
-    conns           vmap.Map               // 连接存储，方便关闭已经连接的连接
-    closed          atomicBool                    // 关闭
-    used            atomicBool                    // 正在使用
+	Verify	func(a, b net.Conn) (net.Conn, net.Conn, error)	// 数据交换前对双方连接操作，可以现实验证之类
+    ll     	*L2L                    		// 引用父结构体 L2L
+    conns  	vmap.Map               			// 连接存储，方便关闭已经连接的连接
+    closed 	atomicBool                    	// 关闭
+    used   	atomicBool                    	// 正在使用
 }
 //ConnNum 当前正在转发的连接数量
 //	int     实时连接数量
@@ -46,10 +47,12 @@ func (T *L2LSwap) Swap() error {
         if T.closed.isTrue() {
             return nil
         }
+        
         //如果父级被关闭，则子级也执行关闭
         if T.ll.closed.isTrue() {
             return T.Close()
         }
+        
         if T.ll.acp.ConnNum() > 0 && T.ll.bcp.ConnNum() > 0 {
             atomic.AddInt32(&T.ll.currUseConn, 1)
             conna, err := T.ll.aGetConn()
@@ -67,25 +70,40 @@ func (T *L2LSwap) Swap() error {
             }
             
             wait = 0
-            	
-            //记录当前连接
-            T.conns.Set(conna, connb)
-
+            
             go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
-                copyData(conna, connb, bufSize)
-                conna.Close()
-            	atomic.AddInt32(&ll.currUseConn, -1)
-            }(conna, connb, T.ll, T, bufSize)
-
-            go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
+        		
+	            defer atomic.AddInt32(&ll.currUseConn, -2)
+	            
+	            if T.closed.isTrue() {
+	            	conna.Close()
+	            	connb.Close()
+	            	return
+	            }
+	            
+	        	//记录当前连接
+	        	T.conns.Set(conna, connb)
+	            defer T.conns.Del(conna)
+	            
+		        //----------------------------
+	        	var err error
+	        	if T.Verify != nil {
+	        		conna, connb, err = T.Verify(conna, connb)
+	        		if err != nil {
+	        			return
+	        		}
+	        	}
+	        	
+		        //----------------------------
+           		go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
+                	copyData(conna, connb, bufSize)
+                	conna.Close()
+                }(conna, connb, ll, T, bufSize)
+                
+		        //----------------------------
                 copyData(connb, conna, bufSize)
                 connb.Close()
-
-                //删除记录的连接，如果是以 .Close() 关闭的。不再重复删除。
-                if !T.closed.isTrue() {
-                    T.conns.Del(conna)
-                }
-            	atomic.AddInt32(&ll.currUseConn, -1)
+                
             }(conna, connb, T.ll, T, bufSize)
         }
     }
