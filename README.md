@@ -116,7 +116,7 @@ type L2D struct {                                                        // L2D�
     Context         context.Context                                             // 上下文
 }
     func (ld *L2D) Close() error                                                // 关闭
-    func (ld *L2D) Transport(raddr, laddr *Addr) (*L2DSwap, error)              // 建立连接
+    func (ld *L2D) Transport(laddr, raddr *Addr) (*L2DSwap, error)              // 建立连接
 type L2DSwap struct {                                                     // L2D交换数据
     Verify          func(lconn, rconn net.Conn) (net.Conn, net.Conn, error)     // 数据交换前对双方连接操作，可以现实验证之类
 }
