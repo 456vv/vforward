@@ -127,9 +127,9 @@ func (T *L2LSwap) Close() error {
 //L2L 是在公网主机上面监听两个TCP端口，由两个内网客户端连接。 L2L使这两个连接进行交换数据，达成内网到内网通道。
 //注意：1）双方必须主动连接公网L2L。2）不支持UDP协议。
 //	------------------------------------
-//  |     |  →  |        |  ←  |     |（1，A和B同时连接[公网-D2D]，由[公网-D2D]互相桥接A和B这两个连接）
-//  |A内网|  ←  |公网-D2D|  ←  |B内网|（2，B 往 A 发送数据）
-//  |     |  →  |        |  →  |     |（3，A 往 B 发送数据）
+//  |     |  →  |   |  ←  |     |（1，A和B同时连接[D2D]，由[D2D]互相桥接A和B这两个连接）
+//  |A内网|  ←  |D2D|  ←  |B内网|（2，B 往 A 发送数据）
+//  |     |  →  |   |  →  |     |（3，A 往 B 发送数据）
 //	------------------------------------
 type L2L struct {
     MaxConn         int                     // 限制连接最大的数量
@@ -185,7 +185,7 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
             if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
                 continue
             }
-            T.logf("L2L.bufConn", "监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
+            T.logf("监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
             return err
         }
         tempDelay = 0
@@ -220,14 +220,14 @@ func (T *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error) {
     var err error
     T.alisten, err = net.Listen(aaddr.Network, aaddr.Local.String())
     if err != nil {
-        T.logf("L2L.Transport监听地址 %s 失败: %v", aaddr.Local.String(), err)
+        T.logf("监听地址 %s 失败: %v", aaddr.Local.String(), err)
         return nil, err
     }
     T.blisten, err = net.Listen(baddr.Network, baddr.Local.String())
     if err != nil {
         T.alisten.Close()
         T.alisten = nil
-        T.logf("L2L.Transport监听地址 %s 失败: %v", baddr.Local.String(), err)
+        T.logf("监听地址 %s 失败: %v", baddr.Local.String(), err)
         return nil, err
     }
     go T.bufConn(T.alisten, &T.acp)
@@ -249,8 +249,8 @@ func (T *L2L) Close() error {
     return nil
 }
 
-func (T *L2L) logf(funcName string, format string, v ...interface{}){
-    if T.ErrorLog != nil{
-        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
-    }
+func (T *L2L) logf(format string, v ...interface{}){
+	if T.ErrorLog != nil {
+		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+	}
 }

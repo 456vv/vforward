@@ -78,7 +78,7 @@ func main(){
     }
 	
 	defer ld.Close()
-    lds, err := ld.Transport(&dial, &listen)
+    lds, err := ld.Transport(&listen, &dial)
     if err != nil {
         log.Println(err)
         return

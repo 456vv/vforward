@@ -98,6 +98,7 @@ func (T *D2DSwap) Swap() error {
         	if T.Verify != nil {
         		conna, connb, err = T.Verify(conna, connb)
         		if err != nil {
+            		T.dd.logf(err.Error())
         			return
         		}
         	}
@@ -216,6 +217,10 @@ func (T *D2D) Transport(a, b *Addr) (*D2DSwap, error) {
 //	error   错误
 func (T *D2D) Close() error {
     T.closed.setTrue()
+    
+    T.aticker.Stop()
+    T.bticker.Stop()
+    
     T.acp.Close()
     T.bcp.Close()
     return nil
@@ -248,7 +253,11 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
             return
         }
         select {
-    	case <- tick.C:
+    	case _, ok := <- tick.C:
+    		if !ok {
+    			//已经被关闭
+    			return
+    		}
     		
             //实时变更
             if cp.IdeTimeout != T.IdeTimeout {
@@ -263,7 +272,7 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
 			
             //1，连接最大限制
             //2，空闲连接限制
-            if  (T.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= T.MaxConn) || (T.KeptIdeConn != 0 && cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= T.KeptIdeConn)  {
+            if (T.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= T.MaxConn) || (T.KeptIdeConn != 0 && cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= T.KeptIdeConn)  {
                 continue
             }
 			
@@ -283,6 +292,7 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
 		    conn, err := cp.DialContext(ctx, addr.Network, addr.Remote.String())
 		    if err != nil {
 		    	T.backPooling.setFalse()
+        		T.logf("向远程 %s 发起请求失败: %v", addr.Remote.String(), err)
                 continue
 		    }
 		    conn.Close()//回到池中
@@ -290,8 +300,8 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
         }
     }
 }
-func (T *D2D) logf(funcName string, format string, v ...interface{}){
-    if T.ErrorLog != nil{
-        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
-    }
+func (T *D2D) logf(format string, v ...interface{}){
+	if T.ErrorLog != nil {
+		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+	}
 }

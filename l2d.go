@@ -68,7 +68,7 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
     if err != nil {
         //远程连接不通，关闭请求连接
         lconn.Close()
-        T.ld.logf("L2DSwap.connRemoteTCP", "本地 %s 向远程 %s 发起请求失败: %v", T.raddr.Local.String(), T.raddr.Remote.String(), err)
+        T.ld.logf("本地 %s 向远程 %s 发起请求失败: %v", T.raddr.Local.String(), T.raddr.Remote.String(), err)
         return
     }
 	
@@ -181,7 +181,7 @@ func (T *L2DSwap) keepAvailable() error {
     			if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
     				continue
     			}
-                T.ld.logf("L2DSwap.keepAvailable", "监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
+                T.ld.logf("监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
     			return err
     		}
             tempDelay = 0
@@ -220,7 +220,7 @@ func (T *L2DSwap) keepAvailable() error {
     				continue
     			}
     			
-                T.ld.logf("L2DSwap.keepAvailable", "监听地址 %s， 并等待连接过程中失败: %v", lconn.LocalAddr(), err)
+                T.ld.logf("监听地址 %s， 并等待连接过程中失败: %v", lconn.LocalAddr(), err)
                 return err
             }
             tempDelay = 0
@@ -246,7 +246,7 @@ func (T *L2DSwap) keepAvailable() error {
             //开始建立连接
             rconn, err := connectUDP(T.raddr)
             if err != nil {
-                T.ld.logf("L2DSwap.keepAvailable", "本地UDP向远程 %v 发起请求失败: %v", T.raddr.Remote.String(), err)
+                T.ld.logf("本地UDP向远程 %v 发起请求失败: %v", T.raddr.Remote.String(), err)
             	atomic.AddInt32(&T.currUseConn, -2)
                 continue
             }
@@ -316,14 +316,14 @@ type L2D struct {
 }
 
 //Transport 支持协议类型："tcp", "tcp4","tcp6", "unix", "unixpacket", "udp", "udp4", "udp6", "ip", "ip4", "ip6", "unixgram"
-//	raddr, laddr *Addr  转发IP，监听IP地址
+//	laddr, raddr *Addr  转发IP，监听IP地址
 //	*L2DSwap    交换数据
 //	error       错误
-func (T *L2D) Transport(raddr, laddr *Addr) (*L2DSwap, error) {
+func (T *L2D) Transport(laddr, raddr *Addr) (*L2DSwap, error) {
     if T.used.setTrue() {
         return nil, errors.New("vforward: 不能重复调用 L2D.Transport")
     }
-
+	
     var err error
     T.listen, err = connectListen(laddr)
     if err != nil {
@@ -346,9 +346,9 @@ func (T *L2D) Close() error {
     return nil
 }
 
-func (T *L2D) logf(funcName string, format string, v ...interface{}){
-    if T.ErrorLog != nil{
-        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
-    }
+func (T *L2D) logf(format string, v ...interface{}){
+	if T.ErrorLog != nil {
+		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+	}
 }
 
