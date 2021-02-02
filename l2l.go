@@ -204,7 +204,7 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
             conn.Close()
             continue
         }
-        cp.Put(conn, conn.LocalAddr())
+        cp.Put(conn, l.Addr())
     }
 }
 
