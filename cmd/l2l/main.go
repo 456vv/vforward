@@ -27,6 +27,9 @@ func main(){
         flag.PrintDefaults()
         return
     }
+    
+    log.SetFlags(log.Lshortfile)
+    
     var err error
     if *fALocal == "" || *fBLocal == "" {
         log.Printf("地址未填，A监听地址 %q, B监听地址 %q", *fALocal, *fBLocal)

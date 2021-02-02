@@ -15,6 +15,7 @@ import (
 
 //D2DSwap 数据交换
 type D2DSwap struct {
+	Verify	func(a, b net.Conn) (net.Conn, net.Conn, error)	// 数据交换前对双方连接操作，可以现实验证之类
     dd      *D2D                // 引用父结构体 D2D
     conns	vmap.Map			// 连接存储，方便关闭已经连接的连接
     closed  atomicBool          // 关闭
@@ -72,37 +73,52 @@ func (T *D2DSwap) Swap() error {
             conna.Close()
             continue
         }
-
-        //记录当前连接
-        T.conns.Set(conna, connb)
-
+        
         bufSize := T.dd.ReadBufSize
         if bufSize == 0 {
             bufSize = DefaultReadBufSize
         }
-        go func(conna, connb net.Conn, dd *D2D, dds *D2DSwap, bufSize int){
-            copyData(conna, connb, bufSize)
-            conna.Close()
-            atomic.AddInt32(&T.dd.currUseConn, -1)
-        }(conna, connb, T.dd, T, bufSize)
-        go func(conna, connb net.Conn, dd *D2D, dds *D2DSwap, bufSie int){
+        
+        go func(conna, connb net.Conn, dd *D2D, T *D2DSwap, bufSize int){
+        	
+            defer atomic.AddInt32(&dd.currUseConn, -2)
+            
+            if T.closed.isTrue() {
+            	conna.Close()
+            	connb.Close()
+            	return
+            }
+            
+        	//记录当前连接
+        	T.conns.Set(conna, connb)
+            defer T.conns.Del(conna)
+            
+	        //----------------------------
+        	var err error
+        	if T.Verify != nil {
+        		conna, connb, err = T.Verify(conna, connb)
+        		if err != nil {
+            		T.dd.logf(err.Error())
+        			return
+        		}
+        	}
+        	
+	        //----------------------------
+	        go func(conna, connb net.Conn, dd *D2D, T *D2DSwap, bufSize int){
+	            copyData(conna, connb, bufSize)
+	            conna.Close()
+	        }(conna, connb, dd, T, bufSize)
+	        
+	        //----------------------------
             copyData(connb, conna, bufSize)
             connb.Close()
-
-            //删除记录的连接，如果是以 .Close() 关闭的。不再重复删除。
-            if !T.closed.isTrue() {
-                T.conns.Del(conna)
-            }
-
-            atomic.AddInt32(&T.dd.currUseConn, -1)
+	        
         }(conna, connb, T.dd, T, bufSize)
     }
-    return nil
 }
 
 //Close 关闭数据交换 .Swap()，你还可以再次使用 .Swap() 启动。
-//  返：
-//      error       错误
+//	error       错误
 func (T *D2DSwap) Close() error {
     T.closed.setTrue()
     T.conns.Range(func(k, v interface{}) bool {
@@ -121,9 +137,9 @@ func (T *D2DSwap) Close() error {
 
 //D2D 内网开放端口，外网无法访问的情况下。内网使用D2D主动连接外网端口。以便外网发来数据转发到内网端口中去。
 //	-------------------------------------
-//  |     |  ←1  |         |  2→  |     |（1，B收到[A内网-D2D]发来连接）
-//  |A内网|  ←4  |A内网-D2D|  ←3  |B外网|（2，B然后向[A内网-D2D]回应数据，数据将转发到A内网。）
-//  |     |  5→  |         |  6→  |     |（3，A内网收到数据再发出数据，由[A内网-D2D]转发到B外网。）
+//  |     |  ←1  |   |  2→  |     |（1，A和B收到[D2D]发来连接）
+//  |A内网|  ←4  |D2D|  ←3  |B外网|（2，B然后向[D2D]回应数据，数据将转发到A内网。）
+//  |     |  5→  |   |  6→  |     |（3，A内网收到数据再发出数据，由[D2D]转发到B外网。）
 //	-------------------------------------
 type D2D struct {
     TryConnTime     time.Duration           // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
@@ -198,10 +214,13 @@ func (T *D2D) Transport(a, b *Addr) (*D2DSwap, error) {
 }
 
 //Close 关闭D2D
-//  返：
-//      error   错误
+//	error   错误
 func (T *D2D) Close() error {
     T.closed.setTrue()
+    
+    T.aticker.Stop()
+    T.bticker.Stop()
+    
     T.acp.Close()
     T.bcp.Close()
     return nil
@@ -234,7 +253,11 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
             return
         }
         select {
-    	case <- tick.C:
+    	case _, ok := <- tick.C:
+    		if !ok {
+    			//已经被关闭
+    			return
+    		}
     		
             //实时变更
             if cp.IdeTimeout != T.IdeTimeout {
@@ -249,10 +272,9 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
 			
             //1，连接最大限制
             //2，空闲连接限制
-            if  (T.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= T.MaxConn) || (T.KeptIdeConn != 0 && cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= T.KeptIdeConn)  {
+            if (T.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= T.MaxConn) || (T.KeptIdeConn != 0 && cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= T.KeptIdeConn)  {
                 continue
             }
-            
 			
 			var (
 				ctx = T.Context
@@ -270,6 +292,7 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
 		    conn, err := cp.DialContext(ctx, addr.Network, addr.Remote.String())
 		    if err != nil {
 		    	T.backPooling.setFalse()
+        		T.logf("向远程 %s 发起请求失败: %v", addr.Remote.String(), err)
                 continue
 		    }
 		    conn.Close()//回到池中
@@ -277,8 +300,8 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr){
         }
     }
 }
-func (T *D2D) logf(funcName string, format string, v ...interface{}){
-    if T.ErrorLog != nil{
-        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
-    }
+func (T *D2D) logf(format string, v ...interface{}){
+	if T.ErrorLog != nil {
+		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+	}
 }

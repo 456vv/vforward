@@ -57,7 +57,7 @@ func connectListen(addr *Addr) (interface{}, error) {
 	case "udp", "udp4", "udp6", "ip", "ip4", "ip6", "unixgram":
         return net.ListenPacket(addr.Network, addr.Local.String())
     default:
-        if strings.HasPrefix(addr.Network, "ip:") && len(addr.Network) > 3 {
+        if strings.HasPrefix(addr.Network, "ip") && len(addr.Network) > 3 {
             return net.ListenPacket(addr.Network, addr.Local.String())
         }
     }
@@ -73,7 +73,7 @@ func connectUDP(addr *Addr) (net.Conn, error) {
 	case "unix", "unixpacket", "unixgram":
 		return net.DialUnix(addr.Network, nil, addr.Remote.(*net.UnixAddr))
     default:
-        if strings.HasPrefix(addr.Network, "ip:") && len(addr.Network) > 3 {
+        if strings.HasPrefix(addr.Network, "ip") && len(addr.Network) > 3 {
 	    	return net.DialIP(addr.Network, nil, addr.Remote.(*net.IPAddr))
         }
 	}

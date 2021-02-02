@@ -30,43 +30,44 @@ func main(){
         flag.PrintDefaults()
         return
     }
+    
+    log.SetFlags(log.Lshortfile)
+    
     var err error
     if *fListen == "" || *fToRemote == "" {
         log.Printf("地址未填，本地监听地址 %q, 转发到远程地址 %q", *fListen, *fToRemote)
         return
     }
 
-    var dial *vforward.Addr
-    var listen *vforward.Addr
+    var (
+     	listen = vforward.Addr{Network:*fNetwork}
+     	dial = vforward.Addr{Network:*fNetwork, Local: &net.TCPAddr{IP: net.ParseIP(*fFromLocal),Port: 0,}}
+     ) 
     switch *fNetwork {
     	case "tcp", "tcp4", "tcp6":
-            listenIP, err := net.ResolveTCPAddr(*fNetwork, *fListen)
+            listen.Local, err = net.ResolveTCPAddr(*fNetwork, *fListen)
             if err != nil {
                 log.Println(err)
                 return
             }
-            dialIP, err := net.ResolveTCPAddr(*fNetwork, *fToRemote)
+            dial.Remote, err = net.ResolveTCPAddr(*fNetwork, *fToRemote)
             if err != nil {
                 log.Println(err)
                 return
             }
-            dial = &vforward.Addr{Network:*fNetwork,Local: &net.TCPAddr{IP: net.ParseIP(*fFromLocal),Port: 0,},Remote: dialIP,}
-            listen = &vforward.Addr{Network:*fNetwork,Local: listenIP,}
     	case "udp", "udp4", "udp6":
-            listenIP, err := net.ResolveUDPAddr(*fNetwork, *fListen)
+            listen.Local, err = net.ResolveUDPAddr(*fNetwork, *fListen)
             if err != nil {
                 log.Println(err)
                 return
             }
-            dialIP, err := net.ResolveUDPAddr(*fNetwork, *fToRemote)
+            dial.Remote, err = net.ResolveUDPAddr(*fNetwork, *fToRemote)
             if err != nil {
                 log.Println(err)
                 return
             }
-            dial = &vforward.Addr{Network:*fNetwork,Local: &net.UDPAddr{IP: net.ParseIP(*fFromLocal),Port: 0,},Remote: dialIP,}
-            listen = &vforward.Addr{Network:*fNetwork,Local: listenIP,}
         default:
-            log.Printf("网络地址类型  %q 是未知的，日前仅支持：tcp/tcp4/tcp6 或 upd/udp4/udp6", *fNetwork)
+            log.Printf("网络地址类型  %q 是未知的，日前仅支持：tcp/tcp4/tcp6, upd/udp4/udp6", *fNetwork)
             return
     }
 
@@ -77,7 +78,7 @@ func main(){
     }
 	
 	defer ld.Close()
-    lds, err := ld.Transport(dial, listen)
+    lds, err := ld.Transport(&listen, &dial)
     if err != nil {
         log.Println(err)
         return

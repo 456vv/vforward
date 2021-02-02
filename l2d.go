@@ -14,6 +14,7 @@ import (
 
 //L2DSwap 数据交换
 type L2DSwap struct {
+	Verify			func(lconn, rconn net.Conn) (net.Conn, net.Conn, error)	// 数据交换前对双方连接操作，可以现实验证之类
     ld              *L2D                    // 引用父结构体 L2D
     dialer			net.Dialer				// 连接拨号
     raddr           *Addr                   // 远程地址
@@ -40,11 +41,21 @@ func (T *L2DSwap) ConnNum() int {
     return T.currUseConns()
 }
 
+//tcp
 func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
-    var (
-    	ctx		= T.ld.Context
-    	cancel 	context.CancelFunc
-    )
+	
+	defer atomic.AddInt32(&T.currUseConn, -2)
+	
+	//交换被关闭
+    if T.used.isFalse() {
+    	lconn.Close()
+    	return
+    }
+    
+	var (
+		ctx = T.ld.Context
+		cancel context.CancelFunc
+	)
     if ctx == nil {
     	ctx = context.Background()
     }
@@ -52,41 +63,43 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
         ctx, cancel = context.WithTimeout(ctx, T.ld.Timeout)
         defer cancel()
     }
-
+	
     rconn, err := T.dialer.DialContext(ctx, T.raddr.Network, T.raddr.Remote.String())
     if err != nil {
         //远程连接不通，关闭请求连接
-        atomic.AddInt32(&T.currUseConn, -2)
         lconn.Close()
-        T.ld.logf("L2DSwap.connRemoteTCP", "本地 %s 向远程 %s 发起请求失败: %v", T.raddr.Local.String(), T.raddr.Remote.String(), err)
+        T.ld.logf("本地 %s 向远程 %s 发起请求失败: %v", T.raddr.Local.String(), T.raddr.Remote.String(), err)
         return
     }
-
+	
     //设置缓冲区大小
     bufSize := T.ld.ReadBufSize
     if bufSize == 0 {
         bufSize = DefaultReadBufSize
     }
-
+    
     //记录连接
     T.conns.Set(lconn, rconn)
-
-    //开始交换数据
-    go func(T *L2DSwap, rconn, lconn net.Conn, bufSize int){
+    defer T.conns.Del(lconn)
+    
+    //----------------------------
+	if T.Verify != nil {
+		lconn, rconn, err = T.Verify(lconn, rconn)
+		if err != nil {
+			return
+		}
+	}
+	
+	//----------------------------
+    go func(T *L2DSwap, lconn, rconn net.Conn, bufSize int){
         copyData(rconn, lconn, bufSize)
         rconn.Close()
-        atomic.AddInt32(&T.currUseConn, -1)
-    }(T, rconn, lconn, bufSize)
-    go func(T *L2DSwap, rconn, lconn net.Conn, bufSize int){
-        copyData(lconn, rconn, bufSize)
-        lconn.Close()
-        atomic.AddInt32(&T.currUseConn, -1)
+    }(T, lconn, rconn, bufSize)
+	
 
-        //删除连接
-        if T.used.isTrue() {
-            T.conns.Del(lconn)
-        }
-    }(T, rconn, lconn, bufSize)
+	//----------------------------
+	copyData(lconn, rconn, bufSize)
+    lconn.Close()
 }
 
 type readWriteReply struct{
@@ -105,54 +118,51 @@ func (rw *readWriteReply) Close() error {
     return rw.rconn.Close()
 }
 
+//udp
 func (T *L2DSwap) connReadReply(rw *readWriteReply){
     //设置缓冲区大小
-    var (
-    	bufSize 	= T.ld.ReadBufSize
-		waitTime	= T.ld.Timeout
-    )
+    bufSize := T.ld.ReadBufSize
     if bufSize == 0 {
         bufSize = DefaultReadBufSize
     }
-    if waitTime == 0 {
-    	waitTime = time.Second
-    }
-    
 
-    var tempDelay time.Duration
-    var ok bool
+    defer atomic.AddInt32(&T.currUseConn, -2)
+	
+	var (
+		lconn = rw.lconn
+		rconn = rw.rconn
+		tempDelay time.Duration
+		ok bool
+		b = make([]byte, bufSize)
+	)
     for {
         //设置UDP读取超时，由于UDP是无连接，无法知道对方状态
         if T.ld.Timeout != 0 {
-            err := rw.rconn.SetReadDeadline(time.Now().Add(waitTime))
+            err := rconn.SetReadDeadline(time.Now().Add(T.ld.Timeout))
             if err != nil {
                 break
             }
         }
 
         //读取数据
-        b := make([]byte, bufSize)
-        n, err := rw.rconn.Read(b)
+        n, err := rconn.Read(b)
         if err != nil {
             if ne, ok := err.(net.Error); ok && ne.Timeout() {
                 break
             }
             //读取出现错误
-		    if tempDelay, ok = temporaryError(err, tempDelay, waitTime); ok {
+		    if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
     			continue
     		}
             break
         }
         tempDelay = 0
         
-        go rw.lconn.WriteTo(b[:n], rw.laddr)
+        go lconn.WriteTo(b[:n], rw.laddr)
     }
 
     T.conns.Del(rw.laddr.String())
     rw.Close()
-    
-    //退出时减去计数
-    atomic.AddInt32(&T.currUseConn, -2)
 }
 
 func (T *L2DSwap) keepAvailable() error {
@@ -171,7 +181,7 @@ func (T *L2DSwap) keepAvailable() error {
     			if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
     				continue
     			}
-                T.ld.logf("L2DSwap.keepAvailable", "监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
+                T.ld.logf("监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
     			return err
     		}
             tempDelay = 0
@@ -196,8 +206,8 @@ func (T *L2DSwap) keepAvailable() error {
             bufSize = DefaultReadBufSize
         }
     	var tempDelay time.Duration
+        var b = make([]byte, bufSize)
         for  {
-            b := make([]byte, bufSize)
             n, laddr, err := lconn.ReadFrom(b)
             if err != nil {
                 //交级关闭了，子级也关闭
@@ -209,7 +219,8 @@ func (T *L2DSwap) keepAvailable() error {
     			if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
     				continue
     			}
-                T.ld.logf("L2DSwap.keepAvailable", "监听地址 %s， 并等待连接过程中失败: %v", lconn.LocalAddr(), err)
+    			
+                T.ld.logf("监听地址 %s， 并等待连接过程中失败: %v", lconn.LocalAddr(), err)
                 return err
             }
             tempDelay = 0
@@ -235,7 +246,7 @@ func (T *L2DSwap) keepAvailable() error {
             //开始建立连接
             rconn, err := connectUDP(T.raddr)
             if err != nil {
-                T.ld.logf("L2DSwap.keepAvailable", "本地UDP向远程 %v 发起请求失败: %v", T.raddr.Remote.String(), err)
+                T.ld.logf("本地UDP向远程 %v 发起请求失败: %v", T.raddr.Remote.String(), err)
             	atomic.AddInt32(&T.currUseConn, -2)
                 continue
             }
@@ -287,14 +298,14 @@ func (T *L2DSwap) Close() error {
 
 //L2D 是在内网或公网都可以使用，配合D2D或L2L使用功能更自由。L2D功能主要是转发连接（端口转发）。
 //	-------------------------------------
-//  |     |  1→  |       |  2→  |     |（1，B收到A发来数据）
-//  |A端口|  ←4  |L2D转发|  ←3  |B端口|（2，然后向A回应数据）
-//  |     |  5→  |       |  6→  |     |（3，B然后再收到A数据）
+//  |     |  1→  |   |  2→  |     |（1，B收到A发来数据）
+//  |A端口|  ←4  |L2D|  ←3  |B端口|（2，然后向A回应数据）
+//  |     |  5→  |   |  6→  |     |（3，B然后再收到A数据）
 //	-------------------------------------
 type L2D struct {
     MaxConn         int                     // 限制连接最大的数量
     ReadBufSize     int                     // 交换数据缓冲大小
-    Timeout         time.Duration           // 发起连接超时
+    Timeout         time.Duration           // TCP发起连接超时，udp远程读取超时
     ErrorLog        *log.Logger             // 日志
     Context			context.Context
 
@@ -305,14 +316,14 @@ type L2D struct {
 }
 
 //Transport 支持协议类型："tcp", "tcp4","tcp6", "unix", "unixpacket", "udp", "udp4", "udp6", "ip", "ip4", "ip6", "unixgram"
-//	raddr, laddr *Addr  转发IP，监听IP地址
+//	laddr, raddr *Addr  转发IP，监听IP地址
 //	*L2DSwap    交换数据
 //	error       错误
-func (T *L2D) Transport(raddr, laddr *Addr) (*L2DSwap, error) {
+func (T *L2D) Transport(laddr, raddr *Addr) (*L2DSwap, error) {
     if T.used.setTrue() {
         return nil, errors.New("vforward: 不能重复调用 L2D.Transport")
     }
-
+	
     var err error
     T.listen, err = connectListen(laddr)
     if err != nil {
@@ -335,9 +346,9 @@ func (T *L2D) Close() error {
     return nil
 }
 
-func (T *L2D) logf(funcName string, format string, v ...interface{}){
-    if T.ErrorLog != nil{
-        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
-    }
+func (T *L2D) logf(format string, v ...interface{}){
+	if T.ErrorLog != nil {
+		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+	}
 }
 

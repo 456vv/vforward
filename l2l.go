@@ -13,10 +13,11 @@ import (
 )
 
 type L2LSwap struct {
-    ll              *L2L                    // 引用父结构体 L2L
-    conns           vmap.Map               // 连接存储，方便关闭已经连接的连接
-    closed          atomicBool                    // 关闭
-    used            atomicBool                    // 正在使用
+	Verify	func(a, b net.Conn) (net.Conn, net.Conn, error)	// 数据交换前对双方连接操作，可以现实验证之类
+    ll     	*L2L                    		// 引用父结构体 L2L
+    conns  	vmap.Map               			// 连接存储，方便关闭已经连接的连接
+    closed 	atomicBool                    	// 关闭
+    used   	atomicBool                    	// 正在使用
 }
 //ConnNum 当前正在转发的连接数量
 //	int     实时连接数量
@@ -46,10 +47,12 @@ func (T *L2LSwap) Swap() error {
         if T.closed.isTrue() {
             return nil
         }
+        
         //如果父级被关闭，则子级也执行关闭
         if T.ll.closed.isTrue() {
             return T.Close()
         }
+        
         if T.ll.acp.ConnNum() > 0 && T.ll.bcp.ConnNum() > 0 {
             atomic.AddInt32(&T.ll.currUseConn, 1)
             conna, err := T.ll.aGetConn()
@@ -67,29 +70,43 @@ func (T *L2LSwap) Swap() error {
             }
             
             wait = 0
-            	
-            //记录当前连接
-            T.conns.Set(conna, connb)
-
+            
             go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
-                copyData(conna, connb, bufSize)
-                conna.Close()
-            	atomic.AddInt32(&ll.currUseConn, -1)
-            }(conna, connb, T.ll, T, bufSize)
-
-            go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
+        		
+	            defer atomic.AddInt32(&ll.currUseConn, -2)
+	            
+	            if T.closed.isTrue() {
+	            	conna.Close()
+	            	connb.Close()
+	            	return
+	            }
+	            
+	        	//记录当前连接
+	        	T.conns.Set(conna, connb)
+	            defer T.conns.Del(conna)
+	            
+		        //----------------------------
+	        	var err error
+	        	if T.Verify != nil {
+	        		conna, connb, err = T.Verify(conna, connb)
+	        		if err != nil {
+	        			return
+	        		}
+	        	}
+	        	
+		        //----------------------------
+           		go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int){
+                	copyData(conna, connb, bufSize)
+                	conna.Close()
+                }(conna, connb, ll, T, bufSize)
+                
+		        //----------------------------
                 copyData(connb, conna, bufSize)
                 connb.Close()
-
-                //删除记录的连接，如果是以 .Close() 关闭的。不再重复删除。
-                if !T.closed.isTrue() {
-                    T.conns.Del(conna)
-                }
-            	atomic.AddInt32(&ll.currUseConn, -1)
+                
             }(conna, connb, T.ll, T, bufSize)
         }
     }
-    return nil
 }
 func (T *L2LSwap) Close() error {
     T.closed.setTrue()
@@ -110,9 +127,9 @@ func (T *L2LSwap) Close() error {
 //L2L 是在公网主机上面监听两个TCP端口，由两个内网客户端连接。 L2L使这两个连接进行交换数据，达成内网到内网通道。
 //注意：1）双方必须主动连接公网L2L。2）不支持UDP协议。
 //	------------------------------------
-//  |     |  →  |        |  ←  |     |（1，A和B同时连接[公网-D2D]，由[公网-D2D]互相桥接A和B这两个连接）
-//  |A内网|  ←  |公网-D2D|  ←  |B内网|（2，B 往 A 发送数据）
-//  |     |  →  |        |  →  |     |（3，A 往 B 发送数据）
+//  |     |  →  |   |  ←  |     |（1，A和B同时连接[D2D]，由[D2D]互相桥接A和B这两个连接）
+//  |A内网|  ←  |D2D|  ←  |B内网|（2，B 往 A 发送数据）
+//  |     |  →  |   |  →  |     |（3，A 往 B 发送数据）
 //	------------------------------------
 type L2L struct {
     MaxConn         int                     // 限制连接最大的数量
@@ -168,7 +185,7 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
             if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
                 continue
             }
-            T.logf("L2L.bufConn", "监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
+            T.logf("监听地址 %s， 并等待连接过程中失败: %v", l.Addr(), err)
             return err
         }
         tempDelay = 0
@@ -187,9 +204,8 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
             conn.Close()
             continue
         }
-        cp.Put(conn, conn.LocalAddr())
+        cp.Put(conn, l.Addr())
     }
-    return nil
 }
 
 //Transport 支持协议类型："tcp", "tcp4","tcp6", "unix" 或 "unixpacket".
@@ -204,14 +220,14 @@ func (T *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error) {
     var err error
     T.alisten, err = net.Listen(aaddr.Network, aaddr.Local.String())
     if err != nil {
-        T.logf("L2L.Transport监听地址 %s 失败: %v", aaddr.Local.String(), err)
+        T.logf("监听地址 %s 失败: %v", aaddr.Local.String(), err)
         return nil, err
     }
     T.blisten, err = net.Listen(baddr.Network, baddr.Local.String())
     if err != nil {
         T.alisten.Close()
         T.alisten = nil
-        T.logf("L2L.Transport监听地址 %s 失败: %v", baddr.Local.String(), err)
+        T.logf("监听地址 %s 失败: %v", baddr.Local.String(), err)
         return nil, err
     }
     go T.bufConn(T.alisten, &T.acp)
@@ -233,8 +249,8 @@ func (T *L2L) Close() error {
     return nil
 }
 
-func (T *L2L) logf(funcName string, format string, v ...interface{}){
-    if T.ErrorLog != nil{
-        T.ErrorLog.Printf(fmt.Sprint(funcName, "->", format), v...)
-    }
+func (T *L2L) logf(format string, v ...interface{}){
+	if T.ErrorLog != nil {
+		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+	}
 }

@@ -33,41 +33,42 @@ func main(){
         flag.PrintDefaults()
         return
     }
+    
+    log.SetFlags(log.Lshortfile)
+    
     var err error
     if *fARemote == "" || *fBRemote == "" {
         log.Printf("地址未填，A端远程地址 %q, B端远程地址 %q", *fARemote, *fBRemote)
         return
     }
 
-    var addra *vforward.Addr
-    var addrb *vforward.Addr
+    var (
+     	addra = vforward.Addr{Network:*fNetwork, Local: &net.TCPAddr{IP: net.ParseIP(*fALocal),Port: 0,}}
+     	addrb = vforward.Addr{Network:*fNetwork, Local: &net.TCPAddr{IP: net.ParseIP(*fBLocal),Port: 0,}}
+     ) 
     switch *fNetwork {
     	case "tcp", "tcp4", "tcp6":
-            rtcpaddr1, err := net.ResolveTCPAddr(*fNetwork, *fARemote)
+            addra.Remote, err = net.ResolveTCPAddr(*fNetwork, *fARemote)
             if err != nil {
                 log.Println(err)
                 return
             }
-            rtcpaddr2, err := net.ResolveTCPAddr(*fNetwork, *fBRemote)
+            addrb.Remote, err = net.ResolveTCPAddr(*fNetwork, *fBRemote)
             if err != nil {
                 log.Println(err)
                 return
             }
-            addra = &vforward.Addr{Network:*fNetwork,Local: &net.TCPAddr{IP: net.ParseIP(*fALocal),Port: 0,},Remote: rtcpaddr1,}
-            addrb = &vforward.Addr{Network:*fNetwork,Local: &net.TCPAddr{IP: net.ParseIP(*fBLocal),Port: 0,},Remote: rtcpaddr2,}
     	case "udp", "udp4", "udp6":
-            rudpaddr1, err := net.ResolveUDPAddr(*fNetwork, *fARemote)
+            addra.Remote, err = net.ResolveUDPAddr(*fNetwork, *fARemote)
             if err != nil {
                 log.Println(err)
                 return
             }
-            rudpaddr2, err := net.ResolveUDPAddr(*fNetwork, *fBRemote)
+            addrb.Remote, err = net.ResolveUDPAddr(*fNetwork, *fBRemote)
             if err != nil {
                 log.Println(err)
                 return
             }
-            addra = &vforward.Addr{Network:*fNetwork,Local: &net.UDPAddr{IP: net.ParseIP(*fALocal),Port: 0,},Remote: rudpaddr1,}
-            addrb = &vforward.Addr{Network:*fNetwork,Local: &net.UDPAddr{IP: net.ParseIP(*fBLocal),Port: 0,},Remote: rudpaddr2,}
         default:
             log.Printf("网络地址类型  %q 是未知的，日前仅支持：tcp/tcp4/tcp6 或 upd/udp4/udp6", *fNetwork)
             return
@@ -82,7 +83,7 @@ func main(){
         ReadBufSize: *fReadBufSize,             // 交换数据缓冲大小
     }
     defer dd.Close()
-    dds, err := dd.Transport(addra, addrb)
+    dds, err := dd.Transport(&addra, &addrb)
     if err != nil {
         log.Println(err)
         return
