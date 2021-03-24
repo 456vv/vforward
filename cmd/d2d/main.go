@@ -12,9 +12,11 @@ var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 
 var fALocal 		= flag.String("ALocal", "0.0.0.0", "A端本地发起连接地址")
 var fARemote 		= flag.String("ARemote", "", "A端远程请求连接地址 (format \"12.13.14.15:123\")")
+var fAVerify		= flag.String("AVerify", "", "A的验证字符串，桥接后的发出的第一条验证数据头。")
 
 var fBLocal 		= flag.String("BLocal", "0.0.0.0", "B端本地发起连接地址")
 var fBRemote 		= flag.String("BRemote", "", "B端远程请求连接地址 (format \"22.23.24.25:234\")")
+var fBVerify		= flag.String("BVerify", "", "B的验证字符串，桥接后的发出的第一条验证数据头。")
 
 var fTryConnTime 	= flag.Duration("TryConnTime", time.Millisecond*500, "尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。单位：ns, us, ms, s, m, h")
 var fTimeout 		= flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
@@ -82,13 +84,31 @@ func main(){
         Timeout: *fTimeout,                     // 发起连接超时
         ReadBufSize: *fReadBufSize,             // 交换数据缓冲大小
     }
-    defer dd.Close()
     dds, err := dd.Transport(&addra, &addrb)
     if err != nil {
         log.Println(err)
         return
     }
-
+    defer dd.Close()
+	dds.Verify = func(a, b net.Conn) (net.Conn, net.Conn, error){
+		if *fAVerify != ""  {
+			_, ne := a.Write([]byte(*fAVerify))
+			if ne != nil {
+				a.Close()
+				b.Close()
+				return nil, nil, ne
+			}
+		}
+		if *fBVerify != ""  {
+			_, ie := b.Write([]byte(*fBVerify))
+			if ie != nil {
+				a.Close()
+				b.Close()
+				return nil, nil, ie
+			}
+		}
+		return a, b, nil
+	}
 	defer dds.Close()
     err = dds.Swap()
     if err != nil {

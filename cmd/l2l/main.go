@@ -6,10 +6,13 @@ import (
     "net"
     "log"
     "fmt"
+    "bytes"
 )
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 var fALocal 		= flag.String("ALocal", "", "A本地监听网卡IP地址 (format \"12.13.14.15:123\")")
+var fAVerify		= flag.String("AVerify", "", "A的验证字符串，桥接后客户端发来的验证数据头。")
 var fBLocal 		= flag.String("BLocal", "", "B本地监听网卡IP地址 (format \"22.23.24.25:234\")")
+var fBVerify		= flag.String("BVerify", "", "B的验证字符串，桥接后客户端发来的验证数据头。")
 
 var fMaxConn 		= flag.Int("MaxConn", 0, "限制连接最大的数量")
 var fKeptIdeConn	= flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
@@ -66,13 +69,45 @@ func main(){
         IdeTimeout: *fIdeTimeout,				// 空闲连接超时
         ReadBufSize: *fReadBufSize,             // 交换数据缓冲大小
     }
-	defer ll.Close()
     lls, err := ll.Transport(addra, addrb)
     if err != nil {
         log.Println(err)
         return
     }
-
+	defer ll.Close()
+	
+	lls.Verify=func(a, b net.Conn) (net.Conn, net.Conn, error){
+		if *fAVerify != ""  {
+			buf := make([]byte, len(*fAVerify))
+			n, ne := a.Read(buf)
+			if ne != nil {
+				a.Close()
+				b.Close()
+				return nil, nil, ne
+			}
+			if !bytes.Equal(buf[:n], []byte(*fAVerify)) {
+				a.Close()
+				b.Close()
+				return nil, nil, fmt.Errorf("error")
+			}
+		}
+		if *fBVerify != ""  {
+			buf := make([]byte, len(*fBVerify))
+			i, ie := b.Read(buf)
+			if ie != nil {
+				a.Close()
+				b.Close()
+				return nil, nil, ie
+			}
+			if !bytes.Equal(buf[:i], []byte(*fBVerify)) {
+				a.Close()
+				b.Close()
+				return nil, nil, fmt.Errorf("error")
+			}
+		}
+		return a, b, nil
+	}
+	
 	defer lls.Close()
     err = lls.Swap()
     if err != nil {

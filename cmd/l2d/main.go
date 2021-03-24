@@ -7,14 +7,17 @@ import (
     "time"
     "log"
     "fmt"
+    "bytes"
 )
 
 var fNetwork 		= flag.String("Network", "tcp", "网络地址类型")
 
 var fListen 		= flag.String("Listen", "", "本地网卡监听地址 (format \"0.0.0.0:123\")")
+var fAVerify		= flag.String("AVerify", "", "监听端的验证字符串，收到客户端发来的验证数据头。")
 
 var fFromLocal 		= flag.String("FromLocal", "0.0.0.0", "转发请求的源地址")
 var fToRemote 		= flag.String("ToRemote", "", "转发请求的目地址 (format \"22.23.24.25:234\")")
+var fBVerify		= flag.String("BVerify", "", "转发端的验证字符串，端发端发去出的验证数据头。")
 
 var fTimeout 		= flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
 var fMaxConn 		= flag.Int("MaxConn", 0, "限制连接最大的数量")
@@ -77,12 +80,38 @@ func main(){
         Timeout: *fTimeout,            // 发起连接超时
     }
 	
-	defer ld.Close()
     lds, err := ld.Transport(&listen, &dial)
     if err != nil {
         log.Println(err)
         return
     }
+	defer ld.Close()
+
+	lds.Verify = func(a, b net.Conn) (net.Conn, net.Conn, error){
+		if *fAVerify != ""  {
+			buf := make([]byte, len(*fAVerify))
+			n, ne := a.Read(buf)
+			if ne != nil {
+				a.Close()
+				b.Close()
+				return nil, nil, ne
+			}
+			if !bytes.Equal(buf[:n], []byte(*fAVerify)) {
+				a.Close()
+				b.Close()
+				return nil, nil, fmt.Errorf("error")
+			}
+		}
+		if *fBVerify != ""  {
+			_, ie := b.Write([]byte(*fBVerify))
+			if ie != nil {
+				a.Close()
+				b.Close()
+				return nil, nil, ie
+			}
+		}
+		return a, b, nil
+	}
 
 	defer lds.Close()
     err = lds.Swap()
