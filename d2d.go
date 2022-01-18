@@ -168,25 +168,19 @@ type D2D struct {
 
 //初始化
 func (T *D2D) init(){
+    //保持一个连接在池中
+	if T.KeptIdeConn == 0 {
+		T.KeptIdeConn = 1
+	}
     T.acp.Dialer	= new(net.Dialer)
     T.acp.MaxConn	= T.MaxConn
     T.acp.IdeTimeout= T.IdeTimeout
     T.acp.IdeConn   = T.KeptIdeConn
     
-    //保持一个连接在池中
-    if T.acp.IdeConn == 0 {
-    	T.acp.IdeConn = 1
-    }
-	
     T.bcp.Dialer	= new(net.Dialer)
     T.bcp.MaxConn	= T.MaxConn
     T.bcp.IdeTimeout= T.IdeTimeout
     T.bcp.IdeConn  	= T.KeptIdeConn
-    
-    //保持一个连接在池中
-    if T.bcp.IdeConn == 0 {
-    	T.bcp.IdeConn = 1
-    }
 }
 
 //Transport 建立连接，支持协议类型："tcp", "tcp4","tcp6", "unix", "unixpacket"。其它还没测试支持："udp", "udp4", "udp6", "ip", "ip4", "ip6", "unixgram"
