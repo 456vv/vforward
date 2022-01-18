@@ -150,7 +150,10 @@ type L2L struct {
     used            atomicBool              // 正在使用
 }
 func (T *L2L) init(){
-	
+    //保持一个连接在池中
+	if T.KeptIdeConn == 0 {
+		T.KeptIdeConn=1
+	}
     T.acp.IdeConn=T.KeptIdeConn
     T.bcp.IdeConn=T.KeptIdeConn
 
