@@ -133,7 +133,7 @@ func (T *L2LSwap) Close() error {
 //	------------------------------------
 type L2L struct {
     MaxConn         int                     // 限制连接最大的数量
-    KeptIdeConn     int                     // 保持一方连接数量，以备快速互相连接。
+    KeptIdeConn     int                     // 保持一方连接数量，以备快速互相连接。(默认：1)
     IdeTimeout      time.Duration           // 空闲连接超时
     ReadBufSize     int                     // 交换数据缓冲大小
     ErrorLog        *log.Logger             // 日志
