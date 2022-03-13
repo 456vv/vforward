@@ -144,7 +144,7 @@ func (T *D2DSwap) Close() error {
 type D2D struct {
     TryConnTime     time.Duration           // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
     MaxConn         int                     // 限制连接最大的数量
-    KeptIdeConn     int                     // 保持一方连接数量，以备快速互相连接。
+    KeptIdeConn     int                     // 保持一方连接数量，以备快速互相连接。(默认：1)
     IdeTimeout      time.Duration           // 空闲连接超时
     ReadBufSize     int                     // 交换数据缓冲大小
     Timeout         time.Duration           // 发起连接超时
