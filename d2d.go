@@ -176,6 +176,12 @@ func (T *D2D) init() {
 	if T.bcp.IdeConn == 0 {
 		T.bcp.IdeConn = 1
 	}
+	if T.acp.MaxConn == 0 {
+		T.acp.MaxConn = 500
+	}
+	if T.bcp.MaxConn == 0 {
+		T.bcp.MaxConn = 500
+	}
 	T.acp.Dialer = new(net.Dialer)
 	T.acp.Dialer.Control = reuseport.Control
 
@@ -183,7 +189,7 @@ func (T *D2D) init() {
 	T.bcp.Dialer.Control = reuseport.Control
 }
 
-// 限制连接最大的数量
+// 限制连接最大的数量。（默认：500）
 func (T *D2D) MaxConn(n int) {
 	T.acp.MaxConn = n
 	T.bcp.MaxConn = n
