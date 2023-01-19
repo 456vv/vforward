@@ -155,11 +155,13 @@ type D2D struct {
 	acp     vconnpool.ConnPool // A方连接池
 	aticker *time.Ticker       // A方心跳时间
 	aaddr   *Addr              // A方连接地址
+	adialer	net.Dialer
 
 	bcp     vconnpool.ConnPool // B方连接池
 	bticker *time.Ticker       // B方心跳时间
 	baddr   *Addr              // B方连接地址
-
+	bdialer	net.Dialer
+	
 	backPooling atomicBool // 确保连接回到池中
 
 	currUseConn int32      // 当前使用连接数量
@@ -182,11 +184,12 @@ func (T *D2D) init() {
 	if T.bcp.MaxConn == 0 {
 		T.bcp.MaxConn = 500
 	}
-	T.acp.Dialer = new(net.Dialer)
-	T.acp.Dialer.Control = reuseport.Control
-
-	T.bcp.Dialer = new(net.Dialer)
-	T.bcp.Dialer.Control = reuseport.Control
+	
+	T.adialer.Control = reuseport.Control
+	T.acp.Dialer = &T.adialer
+		
+	T.bdialer.Control = reuseport.Control
+	T.bcp.Dialer = &T.bdialer
 }
 
 // 限制连接最大的数量。（默认：500）
@@ -222,13 +225,13 @@ func (T *D2D) Transport(a, b *Addr) (*D2DSwap, error) {
 	// A连接
 	T.aaddr = a
 	T.aticker = time.NewTicker(T.TryConnTime)
-	T.acp.LocalAddr = a.Local
+	T.adialer.LocalAddr = a.Local
 	go T.bufConn(T.aticker, &T.acp, a) // 定时处理连接池
 
 	// B连接
 	T.baddr = b
 	T.bticker = time.NewTicker(T.TryConnTime)
-	T.bcp.LocalAddr = b.Local
+	T.bdialer.LocalAddr = b.Local
 	go T.bufConn(T.bticker, &T.bcp, b)
 
 	return &D2DSwap{dd: T}, nil
