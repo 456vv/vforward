@@ -127,7 +127,7 @@ func main() {
 			}
 
 			p := make([]byte, len(vs[1]))
-			if n, err := conn.Read(p); err != nil || !bytes.Equal(p, vs[1]) {
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
 				conn.Close()
 				fmt.Printf("verify error, %s != %s \n", v, p[:n])
 				return false
