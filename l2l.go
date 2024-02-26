@@ -69,7 +69,8 @@ func (T *L2LSwap) Swap() error {
 			connb, err := T.ll.bGetConn()
 			if err != nil {
 				atomic.AddInt32(&T.ll.currUseConn, -2)
-				conna.Close()
+				// 重新进池
+				T.ll.acp.Put(conna, conna.LocalAddr())
 				continue
 			}
 
@@ -141,9 +142,11 @@ type L2L struct {
 
 	alisten net.Listener       // A监听
 	acp     vconnpool.ConnPool // A方连接池
+	averify func(net.Conn) bool
 
 	blisten net.Listener       // B监听
 	bcp     vconnpool.ConnPool // B方连接池
+	bverify func(net.Conn) bool
 
 	currUseConn int32 // 当前使用连接数量
 
@@ -200,7 +203,7 @@ func (T *L2L) bGetConn() (net.Conn, error) {
 	return T.bcp.Get(T.blisten.Addr())
 }
 
-func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
+func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool, verify *func(net.Conn) bool) error {
 	var tempDelay time.Duration
 	var ok bool
 	for {
@@ -219,7 +222,13 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool) error {
 			conn.Close()
 			continue
 		}
-		if err = cp.Put(conn, l.Addr()); err != nil {
+
+		if *verify != nil && !(*verify)(conn) {
+			conn.Close()
+			continue
+		}
+
+		if err = cp.Put(conn, conn.LocalAddr()); err != nil {
 			// 池中受最大连接限制，无法加入池中。
 			conn.Close()
 		}
@@ -249,10 +258,19 @@ func (T *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error) {
 		T.logf("监听地址 %s 失败: %v", baddr.Local.String(), err)
 		return nil, err
 	}
-	go T.bufConn(T.alisten, &T.acp)
-	go T.bufConn(T.blisten, &T.bcp)
+	go T.bufConn(T.alisten, &T.acp, &T.averify)
+	go T.bufConn(T.blisten, &T.bcp, &T.bverify)
 
 	return &L2LSwap{ll: T}, nil
+}
+
+// Verify 连接第一时间完成，即验证可用后才送入池中。
+//
+// a func(net.Conn) error	验证
+// b func(net.Conn) error	验证
+func (T *L2L) Verify(a func(net.Conn) bool, b func(net.Conn) bool) {
+	T.averify = a
+	T.bverify = b
 }
 
 // Close 关闭L2L

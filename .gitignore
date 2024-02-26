@@ -13,3 +13,4 @@
 test/bin/
 cmd/bin/
 .vscode/
+.history

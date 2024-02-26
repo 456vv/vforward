@@ -56,6 +56,7 @@ func runServer(t *testing.T, addr net.Addr) net.Listener {
 	return l
 }
 
+// 判断创建连接是否达到最大
 func Test_D2D_0(t *testing.T) {
 	al := runServer(t, addra.Remote)
 	defer al.Close()
@@ -97,6 +98,8 @@ func Test_D2D_0(t *testing.T) {
 	}
 }
 
+// 判断创建连接是否达到最大
+// 判断转发的内容是否正确
 func Test_L2D_0(t *testing.T) {
 	var exit bool
 
@@ -174,6 +177,8 @@ func Test_L2D_0(t *testing.T) {
 	}
 }
 
+// 判断创建连接是否达到最大
+// 测试UDP转发
 func Test_L2D_1(t *testing.T) {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 	var exit bool
@@ -277,6 +282,7 @@ func Test_L2D_1(t *testing.T) {
 	}
 }
 
+// 判断创建连接是否达到最大
 func Test_L2L_0(t *testing.T) {
 	ll := &L2L{
 		ErrorLog: log.New(os.Stdout, "*", log.LstdFlags),

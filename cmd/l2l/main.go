@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"github.com/456vv/vforward"
 )
@@ -21,7 +22,7 @@ var (
 var (
 	fMaxConn     = flag.Int("MaxConn", 0, "限制连接最大的数量")
 	fKeptIdeConn = flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
-	fIdeTimeout  = flag.Duration("IdeTimeout", 0, "空闲连接超时。单位：ns, us, ms, s, m, h")
+	fIdeTimeout  = flag.String("IdeTimeout", "0s", "空闲连接超时。单位：ns, us, ms, s, m, h")
 	fReadBufSize = flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
 )
 
@@ -68,49 +69,56 @@ func main() {
 		Network: *fNetwork,
 		Local:   addr2,
 	}
-	ll := &vforward.L2L{
-		ReadBufSize: *fReadBufSize, // 交换数据缓冲大小
-	}
-	ll.MaxConn(*fMaxConn)
-	ll.KeptIdeConn(*fKeptIdeConn)
-	ll.IdeTimeout(*fIdeTimeout)
-	lls, err := ll.Transport(addra, addrb)
+
+	ll := new(vforward.L2L)
+	// 空闲连接超时
+	d, err := time.ParseDuration(*fIdeTimeout)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer ll.Close()
+	ll.IdeTimeout(d)
+	ll.MaxConn(*fMaxConn)
+	ll.KeptIdeConn(*fKeptIdeConn)
+	ll.ReadBufSize = *fReadBufSize // 交换数据缓冲大小
 
-	lls.Verify = func(a, b net.Conn) (net.Conn, net.Conn, error) {
-		if *fAVerify != "" {
-			buf := make([]byte, len(*fAVerify))
-			n, ne := a.Read(buf)
-			if ne != nil {
-				a.Close()
-				b.Close()
-				return nil, nil, ne
-			}
-			if !bytes.Equal(buf[:n], []byte(*fAVerify)) {
-				a.Close()
-				b.Close()
-				return nil, nil, fmt.Errorf("a verify error")
-			}
+	oa := func(v string) [][]byte {
+		vs := bytes.SplitN([]byte(v), []byte("|"), 2)
+		if len(vs) != 2 {
+			vs = append(vs, []byte(v))
 		}
-		if *fBVerify != "" {
-			buf := make([]byte, len(*fBVerify))
-			i, ie := b.Read(buf)
-			if ie != nil {
-				a.Close()
-				b.Close()
-				return nil, nil, ie
+		return vs
+	}
+	verify := func(conn net.Conn, v string) bool {
+		if v != "" {
+			vs := oa(v)
+
+			p := make([]byte, len(vs[0]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[0]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
 			}
-			if !bytes.Equal(buf[:i], []byte(*fBVerify)) {
-				a.Close()
-				b.Close()
-				return nil, nil, fmt.Errorf("b verify error")
+
+			if _, err := conn.Write(vs[1]); err != nil {
+				conn.Close()
+				return false
 			}
+
 		}
-		return a, b, nil
+		return true
+	}
+	ll.Verify(func(a net.Conn) bool {
+		return verify(a, *fAVerify)
+	}, func(b net.Conn) bool {
+		return verify(b, *fBVerify)
+	})
+
+	defer ll.Close()
+	lls, err := ll.Transport(addra, addrb)
+	if err != nil {
+		log.Println(err)
+		return
 	}
 
 	defer lls.Close()

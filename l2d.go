@@ -74,6 +74,12 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
 		return
 	}
 
+	if T.ld.bverify != nil && !T.ld.bverify(rconn) {
+		lconn.Close()
+		rconn.Close()
+		return
+	}
+
 	// 设置缓冲区大小
 	bufSize := T.ld.ReadBufSize
 	if bufSize == 0 {
@@ -191,6 +197,11 @@ func (T *L2DSwap) keepAvailable() error {
 			// 2,交换已经关闭
 			// 3,交换不在使用状态
 			if (T.ld.maxConn != 0 && T.currUseConns() >= T.ld.maxConn) || T.used.isFalse() {
+				rw.Close()
+				continue
+			}
+
+			if T.ld.averify != nil && !T.ld.averify(rw) {
 				rw.Close()
 				continue
 			}
@@ -316,6 +327,9 @@ type L2D struct {
 
 	closed atomicBool // 关闭
 	used   atomicBool // 正在使用
+
+	averify func(net.Conn) bool
+	bverify func(net.Conn) bool
 }
 
 // 限制连接最大的数量
@@ -351,6 +365,15 @@ func (T *L2D) Transport(laddr, raddr *Addr) (*L2DSwap, error) {
 	// 保持连接处于监听状态
 	go lds.keepAvailable()
 	return lds, nil
+}
+
+// Verify 连接第一时间完成
+//
+// a func(net.Conn) error	验证
+// b func(net.Conn) error	验证
+func (T *L2D) Verify(a func(net.Conn) bool, b func(net.Conn) bool) {
+	T.averify = a
+	T.bverify = b
 }
 
 // Close 关闭L2D

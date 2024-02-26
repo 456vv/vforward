@@ -21,11 +21,11 @@ var (
 var (
 	fFromLocal = flag.String("FromLocal", "0.0.0.0", "转发请求的源地址")
 	fToRemote  = flag.String("ToRemote", "", "转发请求的目地址 (format \"22.23.24.25:234\")")
-	fBVerify   = flag.String("BVerify", "", "转发端的验证字符串，端发端发去出的验证数据头。")
+	fBVerify   = flag.String("BVerify", "", "转发端的验证字符串，转发端发去出的验证数据头。")
 )
 
 var (
-	fTimeout     = flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
+	fTimeout     = flag.String("Timeout", "5s", "请求远程连接超时。单位：ns, us, ms, s, m, h")
 	fMaxConn     = flag.Int("MaxConn", 0, "限制连接最大的数量")
 	fReadBufSize = flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
 )
@@ -81,43 +81,67 @@ func main() {
 		return
 	}
 
-	ld := &vforward.L2D{
-		ReadBufSize: *fReadBufSize, // 交换数据缓冲大小
-		Timeout:     *fTimeout,     // 发起连接超时
+	ld := new(vforward.L2D)
+
+	// 发起连接超时
+	if ld.Timeout, err = time.ParseDuration(*fTimeout); err != nil {
+		log.Println(err)
+		return
 	}
+	ld.ReadBufSize = *fReadBufSize // 交换数据缓冲大小
 	ld.MaxConn(*fMaxConn)
 
+	oa := func(v string) [][]byte {
+		vs := bytes.SplitN([]byte(v), []byte("|"), 2)
+		if len(vs) != 2 {
+			vs = append(vs, []byte(v))
+		}
+		return vs
+	}
+	ld.Verify(func(conn net.Conn) bool {
+		v := *fAVerify
+		if v != "" {
+			vs := oa(v)
+
+			p := make([]byte, len(vs[0]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[0]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
+
+			if _, err := conn.Write(vs[1]); err != nil {
+				conn.Close()
+				return false
+			}
+
+		}
+		return true
+	}, func(conn net.Conn) bool {
+		v := *fBVerify
+		if v != "" {
+			vs := oa(v)
+
+			if _, err := conn.Write(vs[0]); err != nil {
+				conn.Close()
+				return false
+			}
+
+			p := make([]byte, len(vs[1]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p, vs[1]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
+		}
+		return true
+	})
+
+	defer ld.Close()
 	lds, err := ld.Transport(&listen, &dial)
 	if err != nil {
 		log.Println(err)
 		return
-	}
-	defer ld.Close()
-
-	lds.Verify = func(a, b net.Conn) (net.Conn, net.Conn, error) {
-		if *fAVerify != "" {
-			buf := make([]byte, len(*fAVerify))
-			n, ne := a.Read(buf)
-			if ne != nil {
-				a.Close()
-				b.Close()
-				return nil, nil, ne
-			}
-			if !bytes.Equal(buf[:n], []byte(*fAVerify)) {
-				a.Close()
-				b.Close()
-				return nil, nil, fmt.Errorf("a verify error")
-			}
-		}
-		if *fBVerify != "" {
-			_, ie := b.Write([]byte(*fBVerify))
-			if ie != nil {
-				a.Close()
-				b.Close()
-				return nil, nil, ie
-			}
-		}
-		return a, b, nil
 	}
 
 	defer lds.Close()

@@ -74,7 +74,8 @@ func (T *D2DSwap) Swap() error {
 		connb, err := T.dd.bGetConn()
 		if err != nil {
 			atomic.AddInt32(&T.dd.currUseConn, -2)
-			conna.Close()
+			// 重新进池
+			T.dd.acp.Put(conna, conna.RemoteAddr())
 			continue
 		}
 
@@ -155,13 +156,15 @@ type D2D struct {
 	acp     vconnpool.ConnPool // A方连接池
 	aticker *time.Ticker       // A方心跳时间
 	aaddr   *Addr              // A方连接地址
-	adialer	net.Dialer
+	adialer net.Dialer
+	averify func(net.Conn) bool
 
 	bcp     vconnpool.ConnPool // B方连接池
 	bticker *time.Ticker       // B方心跳时间
 	baddr   *Addr              // B方连接地址
-	bdialer	net.Dialer
-	
+	bdialer net.Dialer
+	bverify func(net.Conn) bool
+
 	backPooling atomicBool // 确保连接回到池中
 
 	currUseConn int32      // 当前使用连接数量
@@ -184,10 +187,10 @@ func (T *D2D) init() {
 	if T.bcp.MaxConn == 0 {
 		T.bcp.MaxConn = 500
 	}
-	
+
 	T.adialer.Control = reuseport.Control
 	T.acp.Dialer = &T.adialer
-		
+
 	T.bdialer.Control = reuseport.Control
 	T.bcp.Dialer = &T.bdialer
 }
@@ -226,15 +229,24 @@ func (T *D2D) Transport(a, b *Addr) (*D2DSwap, error) {
 	T.aaddr = a
 	T.aticker = time.NewTicker(T.TryConnTime)
 	T.adialer.LocalAddr = a.Local
-	go T.bufConn(T.aticker, &T.acp, a) // 定时处理连接池
+	go T.bufConn(T.aticker, &T.acp, a, &T.averify) // 定时处理连接池
 
 	// B连接
 	T.baddr = b
 	T.bticker = time.NewTicker(T.TryConnTime)
 	T.bdialer.LocalAddr = b.Local
-	go T.bufConn(T.bticker, &T.bcp, b)
+	go T.bufConn(T.bticker, &T.bcp, b, &T.bverify)
 
 	return &D2DSwap{dd: T}, nil
+}
+
+// Verify 连接第一时间完成，即验证可用后才送入池中。
+//
+// a func(net.Conn) error	验证
+// b func(net.Conn) error	验证
+func (T *D2D) Verify(a func(net.Conn) bool, b func(net.Conn) bool) {
+	T.averify = a
+	T.bverify = b
 }
 
 // Close 关闭D2D
@@ -271,7 +283,7 @@ func (T *D2D) bGetConn() (net.Conn, error) {
 }
 
 // 缓冲连接，保持可用的连接数量
-func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr) {
+func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr, verify *func(net.Conn) bool) {
 	for {
 		// 程序退出
 		if T.closed.isTrue() {
@@ -302,14 +314,21 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr) {
 			defer cancel()
 		}
 		T.backPooling.setTrue()
-		ctx = context.WithValue(ctx, "priority", true)
+		ctx = context.WithValue(ctx, vconnpool.PriorityContextKey, true)
 		conn, err := cp.DialContext(ctx, addr.Network, addr.Remote.String())
 		if err != nil {
 			T.backPooling.setFalse()
 			T.logf("向远程 %s 发起请求失败: %v", addr.Remote.String(), err)
 			continue
 		}
-		conn.Close() // 回到池中
+
+		conn = conn.(vconnpool.Conn).RawConn()
+		if *verify != nil && !(*verify)(conn) {
+			conn.Close()
+			T.backPooling.setFalse()
+			continue
+		}
+		cp.Put(conn, conn.RemoteAddr())
 		T.backPooling.setFalse()
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"log"
@@ -25,11 +26,11 @@ var (
 )
 
 var (
-	fTryConnTime = flag.Duration("TryConnTime", time.Millisecond*500, "尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。单位：ns, us, ms, s, m, h")
-	fTimeout     = flag.Duration("Timeout", time.Second*5, "转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h")
+	fTryConnTime = flag.String("TryConnTime", "500ms", "尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。单位：ns, us, ms, s, m, h")
+	fTimeout     = flag.String("Timeout", "5s", "请求远程连接超时。单位：ns, us, ms, s, m, h")
 	fMaxConn     = flag.Int("MaxConn", 500, "限制连接最大的数量")
 	fKeptIdeConn = flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
-	fIdeTimeout  = flag.Duration("IdeTimeout", 0, "空闲连接超时。单位：ns, us, ms, s, m, h")
+	fIdeTimeout  = flag.String("IdeTimeout", "0s", "空闲连接超时。单位：ns, us, ms, s, m, h")
 	fReadBufSize = flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
 )
 
@@ -84,42 +85,70 @@ func main() {
 		return
 	}
 
-	dd := &vforward.D2D{
-		TryConnTime: *fTryConnTime, // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
-		Timeout:     *fTimeout,     // 发起连接超时
-		ReadBufSize: *fReadBufSize, // 交换数据缓冲大小
+	dd := new(vforward.D2D)
+
+	// 尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。
+	if dd.TryConnTime, err = time.ParseDuration(*fTryConnTime); err != nil {
+		log.Println(err)
+		return
 	}
+
+	// 发起连接超时
+	if dd.Timeout, err = time.ParseDuration(*fTimeout); err != nil {
+		log.Println(err)
+		return
+	}
+
+	// 发起连接超时
+	d, err := time.ParseDuration(*fIdeTimeout)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	dd.IdeTimeout(d)
 	dd.MaxConn(*fMaxConn)
 	dd.KeptIdeConn(*fKeptIdeConn)
-	dd.IdeTimeout(*fIdeTimeout)
+	dd.ReadBufSize = *fReadBufSize // 交换数据缓冲大小
+
+	oa := func(v string) [][]byte {
+		vs := bytes.SplitN([]byte(v), []byte("|"), 2)
+		if len(vs) != 2 {
+			vs = append(vs, []byte(v))
+		}
+		return vs
+	}
+	verify := func(conn net.Conn, v string) bool {
+		if v != "" {
+			vs := oa(v)
+
+			if _, err := conn.Write(vs[0]); err != nil {
+				conn.Close()
+				return false
+			}
+
+			p := make([]byte, len(vs[1]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p, vs[1]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
+		}
+		return true
+	}
+	dd.Verify(func(conn net.Conn) bool {
+		return verify(conn, *fAVerify)
+	}, func(conn net.Conn) bool {
+		return verify(conn, *fBVerify)
+	})
+
+	defer dd.Close()
 	dds, err := dd.Transport(&addra, &addrb)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer dd.Close()
-	dds.Verify = func(a, b net.Conn) (net.Conn, net.Conn, error) {
-		if *fAVerify != "" {
-			_, ne := a.Write([]byte(*fAVerify))
-			if ne != nil {
-				a.Close()
-				b.Close()
-				return nil, nil, ne
-			}
-		}
-		if *fBVerify != "" {
-			_, ie := b.Write([]byte(*fBVerify))
-			if ie != nil {
-				a.Close()
-				b.Close()
-				return nil, nil, ie
-			}
-		}
-		return a, b, nil
-	}
 	defer dds.Close()
-	err = dds.Swap()
-	if err != nil {
+	if err = dds.Swap(); err != nil {
 		log.Printf("错误：%s\n", err)
 	}
 }
