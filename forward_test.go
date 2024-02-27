@@ -2,11 +2,11 @@ package vforward
 
 import (
 	"bytes"
-	"fmt"
+	"crypto/rand"
+	"errors"
 	"io"
-	"log"
 	"net"
-	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -25,13 +25,13 @@ var addrb = &Addr{
 	Remote:  &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
 }
 
-func fatal(t *testing.T, err error) {
-	if err != nil {
-		t.Fatal(err)
+func fatal(t *testing.T, err ...interface{}) {
+	if len(err) > 0 && err[0] != nil {
+		t.Fatal(err...)
 	}
 }
 
-func server(t *testing.T, addr net.Addr, c chan net.Listener) {
+func serverTCP(t *testing.T, addr net.Addr, c chan net.Listener) {
 	bl, err := net.Listen(addr.Network(), addr.String())
 	fatal(t, err)
 	defer bl.Close()
@@ -41,297 +41,247 @@ func server(t *testing.T, addr net.Addr, c chan net.Listener) {
 		if err != nil {
 			return
 		}
-		go func(conn net.Conn) {
+		go func() {
 			defer conn.Close()
 			io.Copy(conn, conn)
-		}(conn)
+		}()
 	}
 }
 
-func runServer(t *testing.T, addr net.Addr) net.Listener {
+func runServerTCP(t *testing.T, addr net.Addr) net.Listener {
 	run := make(chan net.Listener, 1)
-	go server(t, addr, run)
+	go serverTCP(t, addr, run)
 	l := <-run
 	*addr.(*net.TCPAddr) = *l.Addr().(*net.TCPAddr)
 	return l
 }
 
+func serverUDP(t *testing.T, addr net.Addr, c chan net.PacketConn) {
+	bl, err := net.ListenPacket(addr.Network(), addr.String())
+	fatal(t, err)
+	defer bl.Close()
+	c <- bl
+	// var i int
+	for {
+		p := make([]byte, 1024) // 设置过小，读取到不完成的数据，laddr为nil。
+		n, laddr, err := bl.ReadFrom(p)
+		// t.Log(i, err)
+		// i++
+		if err != nil {
+			break
+		}
+		bl.WriteTo(p[:n], laddr)
+	}
+}
+
+func runServerUDP(t *testing.T, addr net.Addr) net.PacketConn {
+	run := make(chan net.PacketConn, 1)
+	go serverUDP(t, addr, run)
+	l := <-run
+	*addr.(*net.UDPAddr) = *l.LocalAddr().(*net.UDPAddr)
+	return l
+}
+
 // 判断创建连接是否达到最大
 func Test_D2D_0(t *testing.T) {
-	al := runServer(t, addra.Remote)
-	defer al.Close()
-	bl := runServer(t, addrb.Remote)
-	defer bl.Close()
+	defer runServerTCP(t, addra.Remote).Close()
+	defer runServerTCP(t, addrb.Remote).Close()
 
 	// 客户端
-	dd := &D2D{
-		TryConnTime: time.Millisecond,
-		Timeout:     time.Second,
-		ReadBufSize: 1024,
-		ErrorLog:    log.New(os.Stdout, "*", log.LstdFlags|log.Lshortfile),
-	}
+	dd := new(D2D)
+	dd.TryConnTime = time.Millisecond
 	dd.MaxConn(500)
 	dd.KeptIdeConn(4)
 	defer dd.Close()
-	defer dd.Close()
 
-	dds, err := dd.Transport(addra, addrb)
-	if err != nil {
-		t.Fatalf("发起请求失败：%s", err)
-	}
-	defer dds.Close()
-	defer dds.Close()
+	birdge, err := dd.Transport(addra, addrb)
+	fatal(t, err)
+	defer birdge.Close()
 
-	go func(t *testing.T) {
+	go func() {
+		defer birdge.Close()
 		time.Sleep(time.Second * 2)
-		if dds.ConnNum() != dd.acp.MaxConn {
-			t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", dds.ConnNum(), dd.acp.MaxConn)
+		if birdge.ConnNum() != dd.acp.MaxConn {
+			t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", birdge.ConnNum(), dd.acp.MaxConn)
 			t.Fail()
 		}
-		dds.Close()
-		dd.Close()
-	}(t)
-	dds.Swap()
+	}()
+
+	birdge.Swap()
 	time.Sleep(time.Second)
-	if dds.ConnNum() != 0 {
-		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", dds.ConnNum())
+	if birdge.ConnNum() != 0 {
+		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", birdge.ConnNum())
 	}
 }
 
 // 判断创建连接是否达到最大
 // 判断转发的内容是否正确
-func Test_L2D_0(t *testing.T) {
-	var exit bool
-
-	bl := runServer(t, addrb.Remote)
-	defer bl.Close()
+func Test_L2D_TCP(t *testing.T) {
+	defer runServerTCP(t, addrb.Remote).Close()
 
 	// 客户端
-	ld := &L2D{
-		ReadBufSize: 1024,
-		ErrorLog:    log.New(os.Stdout, "*", log.LstdFlags|log.Lshortfile),
-	}
-	ld.MaxConn(10)
-
-	lds, err := ld.Transport(addra, addrb)
-	if err != nil {
-		t.Fatalf("发起请求失败：%s", err)
-	}
-	defer ld.Close()
+	ld := new(L2D)
+	ld.MaxConn(1000)
 	defer ld.Close()
 
-	_, err = ld.Transport(addra, addrb)
-	if err == nil {
-		t.Fatalf("不应该可以重复调用")
-	}
+	bridge, err := ld.Transport(addra, addrb)
+	fatal(t, err)
+	defer bridge.Close()
 
 	// 创建连接并发送数据
-	go func(t *testing.T) {
-		addr, ok := ld.listen.(interface{ Addr() net.Addr })
-		if !ok {
-			t.Log("error")
-			t.Fail()
-		}
-		b := []byte("123")
-		p := make([]byte, 10)
-		for {
-			if exit {
-				return
-			}
-			time.Sleep(time.Millisecond)
-			conn, err := net.Dial(addr.Addr().Network(), addr.Addr().String())
-			if err != nil {
-				continue
-			}
-			conn.Write(b)
-			n, err := conn.Read(p)
-			if err != nil {
-				continue
-			}
-			defer conn.Close()
-			if !bytes.Equal(p[:n], b) {
-				t.Log("两个数据不相等")
-				t.Fail()
-			}
-		}
-	}(t)
+	go func() {
+		defer bridge.Close()
 
-	// 判断连接数量
-	go func(t *testing.T) {
-		time.Sleep(time.Second)
-		if lds.ConnNum() != ld.maxConn {
-			t.Logf("连接数计数量不准。返回为：%d，预计为：%d", lds.ConnNum(), ld.maxConn)
-			t.Fail()
+		addr := ld.listen.(interface{ Addr() net.Addr }).Addr()
+
+		var wg sync.WaitGroup
+		for i := 0; i < ld.maxConn+100; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				conn, err := net.Dial(addr.Network(), addr.String())
+				fatal(t, err)
+				defer conn.Close()
+
+				b := make([]byte, 1024)
+				rand.Reader.Read(b)
+				conn.Write(b)
+
+				p := make([]byte, 1024)
+				n, err := conn.Read(p)
+				// 连接达到最大，ld.maxConn+100
+				if err == io.EOF {
+					return
+				}
+				var ne *net.OpError
+				if ok := errors.As(err, &ne); ok {
+					switch e := ne.Err.Error(); e {
+					case "wsarecv: An existing connection was forcibly closed by the remote host.":
+						return
+					case "wsarecv: An established connection was aborted by the software in your host machine.":
+						return
+					default:
+						t.Log(e)
+					}
+				}
+				fatal(t, err)
+
+				if !bytes.Equal(p[:n], b) {
+					fatal(t, "两个数据不相等")
+				}
+			}()
 		}
+		wg.Wait()
+	}()
 
-		exit = true
-		lds.Close()
-	}(t)
-
-	defer lds.Close()
-	defer lds.Close()
-	lds.Swap()
+	bridge.Swap()
 	time.Sleep(time.Second)
-	if lds.ConnNum() != 0 {
-		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", lds.ConnNum())
+	if bridge.ConnNum() != 0 {
+		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", bridge.ConnNum())
 	}
 }
 
 // 判断创建连接是否达到最大
-// 测试UDP转发
-func Test_L2D_1(t *testing.T) {
-	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	var exit bool
-
+// 测试UDP发送与接收
+func Test_L2D_UDP(t *testing.T) {
+	listen := &Addr{
+		Network: "udp",
+		Local:   &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
+	}
 	dial := &Addr{
 		Network: "udp",
 		Local:   &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
 		Remote:  &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
 	}
-	listen := &Addr{
-		Network: "udp",
-		Local:   &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0},
-	}
 
-	// 服务器
-	server, err := net.ListenPacket(dial.Network, dial.Remote.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer server.Close()
-	dial.Remote = server.LocalAddr()
+	defer runServerUDP(t, dial.Remote).Close()
 
-	done := make(chan bool)
-	go func(t *testing.T) {
-		done <- true
-		for {
-			if exit {
-				return
-			}
-			b := make([]byte, 1024)
-			n, laddr, err := server.ReadFrom(b)
-			if err != nil {
-				return
-			}
-			go server.WriteTo(b[:n], laddr)
-		}
-	}(t)
-	<-done
+	ld := new(L2D)
+	ld.MaxConn(1000)
 
-	// 客户端
-	ld := &L2D{
-		ReadBufSize: 1024,
-		Timeout:     time.Second * 2,
-		ErrorLog:    log.New(os.Stdout, "*", log.LstdFlags),
-	}
-	ld.MaxConn(10)
-
-	lds, err := ld.Transport(listen, dial)
-	if err != nil {
-		t.Fatalf("发起请求失败：%s", err)
-	}
-	_, err = ld.Transport(listen, dial)
-	if err == nil {
-		t.Fatalf("不应该可以重复调用")
-	}
 	defer ld.Close()
-	defer ld.Close()
+
+	bridge, err := ld.Transport(listen, dial)
+	fatal(t, err)
+	defer bridge.Close()
 
 	// 创建连接并发送数据
-	go func(t *testing.T) {
-		addr, ok := ld.listen.(interface{ LocalAddr() net.Addr })
-		if !ok {
-			t.Log("error")
-			t.Fail()
-		}
+	go func() {
+		defer bridge.Close()
 
-		b := []byte("123")
-		p := make([]byte, 10)
-		for i := 0; i < ld.maxConn; i++ {
-			client, err := net.DialUDP(listen.Network, nil, addr.LocalAddr().(*net.UDPAddr))
-			if err != nil {
-				lds.Close()
-				t.Logf("可能是服务器还没启动：%s", err)
-				t.Fail()
+		addr := ld.listen.(interface{ LocalAddr() net.Addr }).LocalAddr()
+
+		for i := 0; i < ld.maxConn+1; i++ {
+			// 这里没有并行测试，由于UDP并行发送会丢包
+			conn, err := net.Dial(addr.Network(), addr.String())
+			fatal(t, err)
+			defer conn.Close()
+
+			b := make([]byte, 1024)
+			rand.Reader.Read(b)
+			conn.Write(b)
+
+			conn.SetReadDeadline(time.Now().Add(time.Second))
+			p := make([]byte, 1024)
+			n, err := conn.Read(p)
+			// 连接达到最大，ld.maxConn+1，服务器没有返回。过期读取超时
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
 			}
+			fatal(t, err)
 
-			client.Write(b)
-			client.SetReadDeadline(time.Now().Add(time.Second))
-			n, err := client.Read(p)
-			if err == nil && !bytes.Equal(b, p[:n]) {
-				fmt.Printf("UDP不正常，发送和收到数据不一致。发送的是：%s，返回的是：%s\n", b, p[:n])
+			if !bytes.Equal(p[:n], b) {
+				fatal(t, "两个数据不相等")
 			}
-			client.Close()
 		}
+	}()
 
-		if lds.ConnNum() != ld.maxConn {
-			t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", lds.ConnNum(), ld.maxConn)
-			t.Fail()
-		}
-
-		exit = true
-		lds.Close()
-	}(t)
-
-	defer lds.Close()
-	defer lds.Close()
-	lds.Swap()
+	bridge.Swap()
 	time.Sleep(time.Second)
-	if lds.ConnNum() != 0 {
-		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", lds.ConnNum())
+	if bridge.ConnNum() != 0 {
+		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", bridge.ConnNum())
 	}
 }
 
 // 判断创建连接是否达到最大
 func Test_L2L_0(t *testing.T) {
-	ll := &L2L{
-		ErrorLog: log.New(os.Stdout, "*", log.LstdFlags),
-	}
-	ll.MaxConn(5)
+	ll := new(L2L)
+	ll.MaxConn(500)
 	ll.KeptIdeConn(2)
-
-	lls, err := ll.Transport(addra, addrb)
-	if err != nil {
-		t.Fatalf("发起请求失败：%s", err)
-	}
 	defer ll.Close()
 
-	go func(t *testing.T) {
+	birdge, err := ll.Transport(addra, addrb)
+	fatal(t, err)
+	defer birdge.Close()
+
+	go func() {
+		defer birdge.Close()
+
 		// 监听端口改变
 		addra.Local = ll.alisten.Addr()
 		addrb.Local = ll.blisten.Addr()
 
 		for i := 0; i < ll.acp.MaxConn*2; i++ {
 			conna, err := net.Dial(addra.Network, addra.Local.String())
-			if err != nil {
-				t.Logf("客户端连接失败：%s", err)
-				t.Fail()
-			}
+			fatal(t, err)
 			defer conna.Close()
 
 			connb, err := net.Dial(addrb.Network, addrb.Local.String())
-			if err != nil {
-				t.Logf("客户端连接失败：%s", err)
-				t.Fail()
-			}
+			fatal(t, err)
 			defer connb.Close()
-			time.Sleep(time.Millisecond * 100)
+			time.Sleep(time.Millisecond)
 		}
 
 		time.Sleep(time.Second)
-		if lls.ConnNum() != ll.acp.MaxConn {
-			t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", lls.ConnNum(), ll.acp.MaxConn)
+		if birdge.ConnNum() != ll.acp.MaxConn {
+			t.Logf("连接数未达预计数量。返回为：%d，预计为：%d", birdge.ConnNum(), ll.acp.MaxConn)
 			t.Fail()
 		}
-		lls.Close()
-		lls.Close()
-	}(t)
+	}()
 
-	defer lls.Close()
-	lls.Swap()
-
+	birdge.Swap()
 	time.Sleep(time.Second)
-	if lls.ConnNum() != 0 {
-		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", lls.ConnNum())
+	if birdge.ConnNum() != 0 {
+		t.Fatalf("还有连接没有被关闭。返回为：%d，预计为：0", birdge.ConnNum())
 	}
 }

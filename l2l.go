@@ -217,21 +217,25 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool, verify *func(net.C
 		}
 		tempDelay = 0
 
-		// 连接最大限制，正在使用+池中空闲
-		if cp.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= cp.MaxConn {
-			conn.Close()
-			continue
-		}
+		go T.examineConn(conn, verify, cp)
+	}
+}
 
-		if *verify != nil && !(*verify)(conn) {
-			conn.Close()
-			continue
-		}
+func (T *L2L) examineConn(conn net.Conn, verify *func(net.Conn) bool, cp *vconnpool.ConnPool) {
+	// 连接最大限制，正在使用+池中空闲
+	if cp.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= cp.MaxConn {
+		conn.Close()
+		return
+	}
 
-		if err = cp.Put(conn, conn.LocalAddr()); err != nil {
-			// 池中受最大连接限制，无法加入池中。
-			conn.Close()
-		}
+	if *verify != nil && !(*verify)(conn) {
+		conn.Close()
+		return
+	}
+
+	if err := cp.Put(conn, conn.LocalAddr()); err != nil {
+		// 池中受最大连接限制，无法加入池中。
+		conn.Close()
 	}
 }
 
@@ -290,5 +294,7 @@ func (T *L2L) Close() error {
 func (T *L2L) logf(format string, v ...interface{}) {
 	if T.ErrorLog != nil {
 		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+		return
 	}
+	log.Printf(format+"\n", v...)
 }
