@@ -46,13 +46,15 @@ func (T *L2DSwap) ConnNum() int {
 
 // tcp
 func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
-	defer atomic.AddInt32(&T.currUseConn, -2)
-
 	// 交换被关闭
 	if T.used.isFalse() {
 		lconn.Close()
 		return
 	}
+
+	// 计数连接数
+	atomic.AddInt32(&T.currUseConn, 2)
+	defer atomic.AddInt32(&T.currUseConn, -2)
 
 	var (
 		ctx    = T.ld.Context
@@ -133,43 +135,69 @@ func (T *L2DSwap) connReadReply(rw *readWriteReply) {
 		bufSize = DefaultReadBufSize
 	}
 
-	defer atomic.AddInt32(&T.currUseConn, -2)
+	// 没有超时是危险的，连接不会断开，默认一分钟超时
+	timeout := T.ld.Timeout
+	if timeout == 0 {
+		timeout = time.Minute
+	}
 
-	var (
-		lconn     = rw.lconn
-		rconn     = rw.rconn
-		tempDelay time.Duration
-		ok        bool
-		b         = make([]byte, bufSize)
-	)
+	defer atomic.AddInt32(&T.currUseConn, -2)
+	defer T.conns.Del(rw.laddr.String())
+	defer rw.Close()
+
 	for {
 		// 设置UDP读取超时，由于UDP是无连接，无法知道对方状态
-		if T.ld.Timeout != 0 {
-			err := rconn.SetReadDeadline(time.Now().Add(T.ld.Timeout))
-			if err != nil {
-				break
-			}
+		if err := rw.rconn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			break
 		}
-
 		// 读取数据
-		n, err := rconn.Read(b)
+		b := make([]byte, bufSize)
+		n, err := rw.rconn.Read(b)
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				break
-			}
-			// 读取出现错误
-			if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
-				continue
+			if n > 0 {
+				T.ld.logf("转发过程 %s->%s 读取数据长度%d, 超出限制%d, 但返回错误: %v", rw.laddr.String(), rw.rconn.RemoteAddr().String(), n, bufSize, err)
 			}
 			break
 		}
-		tempDelay = 0
 
-		go lconn.WriteTo(b[:n], rw.laddr)
+		go rw.lconn.WriteTo(b[:n], rw.laddr)
+	}
+}
+
+func (T *L2DSwap) connRemoteUDP(b []byte, laddr net.Addr, lconn net.PacketConn) {
+	// 如果已经建立连接
+	if rw, ok := T.conns.Get(laddr.String()).(*readWriteReply); ok {
+		rw.rconn.Write(b)
+		return
 	}
 
-	T.conns.Del(rw.laddr.String())
-	rw.Close()
+	// 1,连接数量超过最大限制
+	// 2,交换已经关闭
+	// 3,交换不在使用状态
+	if (T.ld.maxConn != 0 && T.currUseConns() >= T.ld.maxConn) || T.used.isFalse() {
+		return
+	}
+
+	// 计数连接数
+	atomic.AddInt32(&T.currUseConn, 2)
+
+	// 开始建立连接
+	rconn, err := connectUDP(T.raddr)
+	if err != nil {
+		T.ld.logf("本地UDP向远程 %v 发起请求失败: %v", T.raddr.Remote.String(), err)
+		atomic.AddInt32(&T.currUseConn, -2)
+		return
+	}
+
+	rw := &readWriteReply{
+		lconn: lconn,
+		laddr: laddr,
+		rconn: rconn,
+	}
+	T.conns.Set(laddr.String(), rw)
+
+	rconn.Write(b)
+	T.connReadReply(rw)
 }
 
 func (T *L2DSwap) keepAvailable() error {
@@ -193,23 +221,7 @@ func (T *L2DSwap) keepAvailable() error {
 			}
 			tempDelay = 0
 
-			// 1,连接数量超过最大限制
-			// 2,交换已经关闭
-			// 3,交换不在使用状态
-			if (T.ld.maxConn != 0 && T.currUseConns() >= T.ld.maxConn) || T.used.isFalse() {
-				rw.Close()
-				continue
-			}
-
-			if T.ld.averify != nil && !T.ld.averify(rw) {
-				rw.Close()
-				continue
-			}
-
-			// 计数连接数
-			atomic.AddInt32(&T.currUseConn, 2)
-
-			go T.connRemoteTCP(rw)
+			go T.examineConn(rw)
 		}
 	} else if lconn, ok := T.ld.listen.(net.PacketConn); ok {
 		// 这里是UDP连接
@@ -217,62 +229,42 @@ func (T *L2DSwap) keepAvailable() error {
 		if bufSize == 0 {
 			bufSize = DefaultReadBufSize
 		}
-		var tempDelay time.Duration
-		b := make([]byte, bufSize)
 		for {
+			b := make([]byte, bufSize)
 			n, laddr, err := lconn.ReadFrom(b)
 			if err != nil {
-				// 交级关闭了，子级也关闭
+				// 上级关闭了，子级也关闭
 				if T.ld.closed.isTrue() {
 					return T.Close()
 				}
-
-				// 读取出现错误
-				if tempDelay, ok = temporaryError(err, tempDelay, time.Second); ok {
-					continue
+				if n > 0 {
+					T.ld.logf("监听地址 %s, 读取数据长度%d, 超出限制%d, 但返回错误: %v", lconn.LocalAddr(), n, bufSize, err)
+					return err
 				}
-
-				T.ld.logf("监听地址 %s， 并等待连接过程中失败: %v", lconn.LocalAddr(), err)
+				T.ld.logf("监听地址 %s, 并等待连接过程中失败: %v", lconn.LocalAddr(), err)
 				return err
 			}
-			tempDelay = 0
-
-			// 如果已经建立连接
-			if inf, ok := T.conns.GetHas(laddr.String()); ok {
-				rw := inf.(*readWriteReply)
-				go rw.rconn.Write(b[:n])
-				continue
-			}
-
-			// 1,连接数量超过最大限制
-			// 2,交换已经关闭
-			// 3,交换不在使用状态
-			if (T.ld.maxConn != 0 && T.currUseConns() >= T.ld.maxConn) || T.used.isFalse() {
-				continue
-			}
-
-			// 计数连接数
-			atomic.AddInt32(&T.currUseConn, 2)
-
-			// 开始建立连接
-			rconn, err := connectUDP(T.raddr)
-			if err != nil {
-				T.ld.logf("本地UDP向远程 %v 发起请求失败: %v", T.raddr.Remote.String(), err)
-				atomic.AddInt32(&T.currUseConn, -2)
-				continue
-			}
-			rw := &readWriteReply{
-				lconn: lconn,
-				laddr: laddr,
-				rconn: rconn,
-			}
-			T.conns.Set(laddr.String(), rw)
-
-			go T.connReadReply(rw)
-			go rw.rconn.Write(b[:n])
+			go T.connRemoteUDP(b[:n], laddr, lconn)
 		}
 	}
 	return nil
+}
+
+func (T *L2DSwap) examineConn(conn net.Conn) {
+	// 1,连接数量超过最大限制
+	// 2,交换已经关闭
+	// 3,交换不在使用状态
+	if (T.ld.maxConn != 0 && T.currUseConns() >= T.ld.maxConn) || T.used.isFalse() {
+		conn.Close()
+		return
+	}
+
+	if T.ld.averify != nil && !T.ld.averify(conn) {
+		conn.Close()
+		return
+	}
+
+	T.connRemoteTCP(conn)
 }
 
 // Swap 开始数据交换，当有TCP/UDP请求发来的时候，将会转发连接。
@@ -319,7 +311,7 @@ func (T *L2DSwap) Close() error {
 type L2D struct {
 	maxConn     int           // 限制连接最大的数量
 	ReadBufSize int           // 交换数据缓冲大小
-	Timeout     time.Duration // TCP发起连接超时，udp远程读取超时
+	Timeout     time.Duration // TCP发起连接超时，udp远程读取超时(默认：60s)
 	ErrorLog    *log.Logger   // 日志
 	Context     context.Context
 
@@ -390,5 +382,7 @@ func (T *L2D) Close() error {
 func (T *L2D) logf(format string, v ...interface{}) {
 	if T.ErrorLog != nil {
 		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+		return
 	}
+	log.Printf(format+"\n", v...)
 }

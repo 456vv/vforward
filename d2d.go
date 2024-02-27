@@ -46,6 +46,9 @@ func (T *D2DSwap) Swap() error {
 		wait    time.Duration
 		maxWait = T.dd.TryConnTime
 	)
+	if maxWait == 0 {
+		maxWait = time.Second
+	}
 	for {
 		// 程序退出
 		if T.closed.isTrue() {
@@ -147,7 +150,7 @@ func (T *D2DSwap) Close() error {
 //	 |     |  5→  |   |  6→  |     |（3，A内网收到数据再发出数据，由[D2D]转发到B外网。）
 //		-------------------------------------
 type D2D struct {
-	TryConnTime time.Duration   // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
+	TryConnTime time.Duration   // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。(默认：1s)
 	ReadBufSize int             // 交换数据缓冲大小
 	Timeout     time.Duration   // 发起连接超时
 	ErrorLog    *log.Logger     // 日志
@@ -225,15 +228,21 @@ func (T *D2D) Transport(a, b *Addr) (*D2DSwap, error) {
 		return nil, errors.New("vforward: 不能重复调用 D2D.Transport")
 	}
 	T.init()
+
+	tryTime := T.TryConnTime
+	if tryTime == 0 {
+		tryTime = time.Second
+	}
+
 	// A连接
 	T.aaddr = a
-	T.aticker = time.NewTicker(T.TryConnTime)
+	T.aticker = time.NewTicker(tryTime)
 	T.adialer.LocalAddr = a.Local
 	go T.bufConn(T.aticker, &T.acp, a, &T.averify) // 定时处理连接池
 
 	// B连接
 	T.baddr = b
-	T.bticker = time.NewTicker(T.TryConnTime)
+	T.bticker = time.NewTicker(tryTime)
 	T.bdialer.LocalAddr = b.Local
 	go T.bufConn(T.bticker, &T.bcp, b, &T.bverify)
 
@@ -296,45 +305,61 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr, ver
 			return
 		}
 
-		// 1，连接最大限制
-		// 2，空闲连接限制
-		if (cp.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= cp.MaxConn) || (cp.IdeConn != 0 && cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= cp.IdeConn) {
-			continue
+		if !T.saturation(cp, addr) {
+			go T.examineConn(cp, addr, verify)
 		}
+	}
+}
 
-		var (
-			ctx    = T.Context
-			cancel context.CancelFunc
-		)
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		if T.Timeout != 0 {
-			ctx, cancel = context.WithTimeout(ctx, T.Timeout)
-			defer cancel()
-		}
-		T.backPooling.setTrue()
-		ctx = context.WithValue(ctx, vconnpool.PriorityContextKey, true)
-		conn, err := cp.DialContext(ctx, addr.Network, addr.Remote.String())
-		if err != nil {
-			T.backPooling.setFalse()
-			T.logf("向远程 %s 发起请求失败: %v", addr.Remote.String(), err)
-			continue
-		}
+func (T *D2D) saturation(cp *vconnpool.ConnPool, addr *Addr) bool {
+	// 连接最大限制
+	return T.currUseConns()+cp.ConnNum() >= cp.MaxConn
+}
 
-		conn = conn.(vconnpool.Conn).RawConn()
-		if *verify != nil && !(*verify)(conn) {
-			conn.Close()
-			T.backPooling.setFalse()
-			continue
-		}
-		cp.Put(conn, conn.RemoteAddr())
-		T.backPooling.setFalse()
+func (T *D2D) examineConn(cp *vconnpool.ConnPool, addr *Addr, verify *func(net.Conn) bool) {
+	if T.saturation(cp, addr) {
+		return
+	}
+
+	var (
+		ctx    = T.Context
+		cancel context.CancelFunc
+	)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if T.Timeout != 0 {
+		ctx, cancel = context.WithTimeout(ctx, T.Timeout)
+		defer cancel()
+	}
+	T.backPooling.setTrue()
+	defer T.backPooling.setFalse()
+	ctx = context.WithValue(ctx, vconnpool.PriorityContextKey, true)
+	conn, err := cp.DialContext(ctx, addr.Network, addr.Remote.String())
+	if err != nil {
+		T.logf("向远程 %s 发起请求失败: %v", addr.Remote.String(), err)
+		return
+	}
+
+	conn = conn.(vconnpool.Conn).RawConn()
+	if *verify != nil && !(*verify)(conn) {
+		conn.Close()
+		return
+	}
+
+	if T.saturation(cp, addr) {
+		conn.Close()
+		return
+	}
+	if err := cp.Put(conn, conn.RemoteAddr()); err != nil {
+		conn.Close()
 	}
 }
 
 func (T *D2D) logf(format string, v ...interface{}) {
 	if T.ErrorLog != nil {
 		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
+		return
 	}
+	log.Printf(format+"\n", v...)
 }
