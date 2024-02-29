@@ -78,7 +78,9 @@ func (T *D2DSwap) Swap() error {
 		if err != nil {
 			atomic.AddInt32(&T.dd.currUseConn, -2)
 			// 重新进池
-			T.dd.acp.Put(conna, conna.RemoteAddr())
+			if err := T.dd.acp.Put(conna, T.dd.aaddr.Remote); err != nil {
+				conna.Close()
+			}
 			continue
 		}
 
@@ -200,8 +202,10 @@ func (T *D2D) init() {
 
 // 限制连接最大的数量。（默认：500）
 func (T *D2D) MaxConn(n int) {
-	T.acp.MaxConn = n
-	T.bcp.MaxConn = n
+	if n > 0 {
+		T.acp.MaxConn = n
+		T.bcp.MaxConn = n
+	}
 }
 
 // 保持一方连接数量，以备快速互相连接。(默认：1)
@@ -312,8 +316,9 @@ func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr, ver
 }
 
 func (T *D2D) saturation(cp *vconnpool.ConnPool, addr *Addr) bool {
-	// 连接最大限制
-	return T.currUseConns()+cp.ConnNum() >= cp.MaxConn
+	// 使用连接最大限制
+	// 空闲连接达到最大限制
+	return T.currUseConns()+cp.ConnNum() >= cp.MaxConn || cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= cp.IdeConn
 }
 
 func (T *D2D) examineConn(cp *vconnpool.ConnPool, addr *Addr, verify *func(net.Conn) bool) {
@@ -351,7 +356,7 @@ func (T *D2D) examineConn(cp *vconnpool.ConnPool, addr *Addr, verify *func(net.C
 		conn.Close()
 		return
 	}
-	if err := cp.Put(conn, conn.RemoteAddr()); err != nil {
+	if err := cp.Put(conn, addr.Remote); err != nil {
 		conn.Close()
 	}
 }
