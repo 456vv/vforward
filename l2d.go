@@ -3,7 +3,6 @@ package vforward
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -29,19 +28,15 @@ type L2DSwap struct {
 
 // 当前连接数量
 func (T *L2DSwap) currUseConns() int {
-	var i int = int(atomic.LoadInt32(&T.currUseConn))
-	if i%2 != 0 {
-		return (i / 2) + 1
-	} else {
-		return (i / 2)
-	}
+	return int(atomic.LoadInt32(&T.currUseConn)) / 2
 }
 
 // ConnNum 当前正在转发的连接数量
 //
 //	int     实时连接数量
 func (T *L2DSwap) ConnNum() int {
-	return T.currUseConns()
+	var i int = int(atomic.LoadInt32(&T.currUseConn))
+	return (i / 2) + (i % 2)
 }
 
 // tcp
@@ -77,17 +72,11 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
 	}
 
 	if T.ld.bverify != nil && !T.ld.bverify(rconn) {
+		T.ld.logf("%s 连接验证失败", rconn.RemoteAddr().String())
 		lconn.Close()
 		rconn.Close()
 		return
 	}
-
-	// 设置缓冲区大小
-	bufSize := T.ld.ReadBufSize
-	if bufSize == 0 {
-		bufSize = DefaultReadBufSize
-	}
-
 	// 记录连接
 	T.conns.Set(lconn, rconn)
 	defer T.conns.Del(lconn)
@@ -96,17 +85,21 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
 	if T.Verify != nil {
 		lconn, rconn, err = T.Verify(lconn, rconn)
 		if err != nil {
+			T.ld.logf("验证失败: %s", err)
 			return
 		}
 	}
 
-	//----------------------------
-	go func(T *L2DSwap, lconn, rconn net.Conn, bufSize int) {
+	// 设置缓冲区大小
+	bufSize := T.ld.ReadBufSize
+	if bufSize == 0 {
+		bufSize = DefaultReadBufSize
+	}
+
+	go func() {
 		copyData(rconn, lconn, bufSize)
 		rconn.Close()
-	}(T, lconn, rconn, bufSize)
-
-	//----------------------------
+	}()
 	copyData(lconn, rconn, bufSize)
 	lconn.Close()
 }
@@ -260,6 +253,7 @@ func (T *L2DSwap) examineConn(conn net.Conn) {
 	}
 
 	if T.ld.averify != nil && !T.ld.averify(conn) {
+		T.ld.logf("%s 连接验证失败", conn.RemoteAddr().String())
 		conn.Close()
 		return
 	}
@@ -380,9 +374,5 @@ func (T *L2D) Close() error {
 }
 
 func (T *L2D) logf(format string, v ...interface{}) {
-	if T.ErrorLog != nil {
-		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
-		return
-	}
-	log.Printf(format+"\n", v...)
+	errLog(T.ErrorLog, format, v...)
 }

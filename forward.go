@@ -2,7 +2,9 @@ package vforward
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -81,4 +83,13 @@ func connectUDP(addr *Addr) (net.Conn, error) {
 		}
 	}
 	return nil, errors.New("vforward: 远程地址类型是未知的")
+}
+
+func errLog(ErrorLog *log.Logger, format string, v ...interface{}) {
+	str := fmt.Sprintf(format+"\n", v...)
+	if ErrorLog != nil {
+		ErrorLog.Output(2, str)
+		return
+	}
+	log.Print(str)
 }

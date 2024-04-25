@@ -2,7 +2,6 @@ package vforward
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -26,7 +25,13 @@ type L2LSwap struct {
 //
 //	int     实时连接数量
 func (T *L2LSwap) ConnNum() int {
-	return T.ll.currUseConns()
+	var i int = int(atomic.LoadInt32(&T.ll.currUseConn))
+	// 1个等1个
+	// 2个等1个
+	// 3个等2个
+	// 4个等2个
+	// 5个等3个
+	return (i / 2) + (i % 2)
 }
 
 func (T *L2LSwap) Swap() error {
@@ -36,17 +41,8 @@ func (T *L2LSwap) Swap() error {
 
 	T.closed.setFalse()
 
-	bufSize := T.ll.ReadBufSize
-	if bufSize == 0 {
-		bufSize = DefaultReadBufSize
-	}
-
 	var wait, maxDelay time.Duration = 0, time.Second
-
 	for {
-		// 延时
-		wait = delay(wait, maxDelay)
-
 		// 程序退出
 		if T.closed.isTrue() {
 			return nil
@@ -57,59 +53,73 @@ func (T *L2LSwap) Swap() error {
 			return T.Close()
 		}
 
-		if T.ll.acp.ConnNum() > 0 && T.ll.bcp.ConnNum() > 0 {
-			atomic.AddInt32(&T.ll.currUseConn, 1)
-			conna, err := T.ll.aGetConn()
+		if T.ll.acp.ConnNum() <= 0 || T.ll.bcp.ConnNum() <= 0 {
+			// 延时
+			wait = delay(wait, maxDelay)
+			continue
+		}
+		wait = 0
+
+		atomic.AddInt32(&T.ll.currUseConn, 1)
+		conna, err := T.ll.aGetConn()
+		if err != nil {
+			atomic.AddInt32(&T.ll.currUseConn, -1)
+			// T.ll.logf("%s 池中读取连接错误: %s", T.ll.alisten.Addr().String(), err)
+			continue
+		}
+
+		atomic.AddInt32(&T.ll.currUseConn, 1)
+		connb, err := T.ll.bGetConn()
+		if err != nil {
+			// T.ll.logf("%s 池中读取连接错误: %s", T.ll.blisten.Addr().String(), err)
+			atomic.AddInt32(&T.ll.currUseConn, -2)
+			// 重新进池
+			err = T.ll.acp.Put(conna, conna.LocalAddr())
 			if err != nil {
-				atomic.AddInt32(&T.ll.currUseConn, -1)
-				continue
+				// T.ll.logf("%s 连接加入 %s 池中读取连接错误: %s", conna.RemoteAddr().String(), conna.LocalAddr().String(), err)
+				conna.Close()
 			}
+			continue
+		}
 
-			atomic.AddInt32(&T.ll.currUseConn, 1)
-			connb, err := T.ll.bGetConn()
-			if err != nil {
-				atomic.AddInt32(&T.ll.currUseConn, -2)
-				// 重新进池
-				T.ll.acp.Put(conna, conna.LocalAddr())
-				continue
-			}
+		go T.dataCopy(conna, connb)
+	}
+}
 
-			wait = 0
+func (T *L2LSwap) dataCopy(conna, connb net.Conn) {
+	bufSize := T.ll.ReadBufSize
+	if bufSize == 0 {
+		bufSize = DefaultReadBufSize
+	}
 
-			go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int) {
-				defer atomic.AddInt32(&ll.currUseConn, -2)
+	defer atomic.AddInt32(&T.ll.currUseConn, -2)
 
-				if T.closed.isTrue() {
-					conna.Close()
-					connb.Close()
-					return
-				}
+	if T.closed.isTrue() {
+		conna.Close()
+		connb.Close()
+		return
+	}
 
-				// 记录当前连接
-				T.conns.Set(conna, connb)
-				defer T.conns.Del(conna)
+	// 记录当前连接
+	T.conns.Set(conna, connb)
+	defer T.conns.Del(conna)
 
-				//----------------------------
-				var err error
-				if T.Verify != nil {
-					conna, connb, err = T.Verify(conna, connb)
-					if err != nil {
-						return
-					}
-				}
-
-				//----------------------------
-				go func(conna, connb net.Conn, ll *L2L, T *L2LSwap, bufSize int) {
-					copyData(conna, connb, bufSize)
-					conna.Close()
-				}(conna, connb, ll, T, bufSize)
-
-				//----------------------------
-				copyData(connb, conna, bufSize)
-				connb.Close()
-			}(conna, connb, T.ll, T, bufSize)
+	//----------------------------
+	var err error
+	if T.Verify != nil {
+		conna, connb, err = T.Verify(conna, connb)
+		if err != nil {
+			T.ll.logf("验证失败: %s", err)
+			return
 		}
 	}
+
+	go func() {
+		copyData(conna, connb, bufSize)
+		conna.Close()
+	}()
+	copyData(connb, conna, bufSize)
+	connb.Close()
 }
 
 func (T *L2LSwap) Close() error {
@@ -186,12 +196,12 @@ func (T *L2L) IdeTimeout(d time.Duration) {
 
 // 当前连接数量
 func (T *L2L) currUseConns() int {
-	var i int = int(atomic.LoadInt32(&T.currUseConn))
-	if i%2 != 0 {
-		return (i / 2) + 1
-	} else {
-		return (i / 2)
-	}
+	// 1个等0个
+	// 2个等1个
+	// 3个等1个
+	// 4个等2个
+	// 5个等2个
+	return int(atomic.LoadInt32(&T.currUseConn)) / 2
 }
 
 // 快速取得连接
@@ -224,17 +234,20 @@ func (T *L2L) bufConn(l net.Listener, cp *vconnpool.ConnPool, verify *func(net.C
 func (T *L2L) examineConn(conn net.Conn, verify *func(net.Conn) bool, cp *vconnpool.ConnPool) {
 	// 连接最大限制，正在使用+池中空闲
 	if cp.MaxConn != 0 && T.currUseConns()+cp.ConnNum() >= cp.MaxConn {
+		// T.logf("%s 池中数量达到最大 %s 连接不能入池", conn.LocalAddr().String(), conn.RemoteAddr().String())
 		conn.Close()
 		return
 	}
 
 	if *verify != nil && !(*verify)(conn) {
+		T.logf("%s 连接验证失败", conn.RemoteAddr().String())
 		conn.Close()
 		return
 	}
 
 	if err := cp.Put(conn, conn.LocalAddr()); err != nil {
 		// 池中受最大连接限制，无法加入池中。
+		// T.logf("%s 连接加入 %s 池中读取连接错误: %s", conn.RemoteAddr().String(), conn.LocalAddr().String(), err)
 		conn.Close()
 	}
 }
@@ -292,9 +305,5 @@ func (T *L2L) Close() error {
 }
 
 func (T *L2L) logf(format string, v ...interface{}) {
-	if T.ErrorLog != nil {
-		T.ErrorLog.Output(2, fmt.Sprintf(format+"\n", v...))
-		return
-	}
-	log.Printf(format+"\n", v...)
+	errLog(T.ErrorLog, format, v...)
 }
