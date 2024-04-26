@@ -1,6 +1,5 @@
 go mod tidy
-
-set CGO_ENABLED=0
+go get -u
 
 set GOOS=windows
 set GOARCH=amd64
