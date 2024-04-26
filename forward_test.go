@@ -323,3 +323,45 @@ func Test_L2L_0(t *testing.T) {
 	time.Sleep(time.Second)
 	as.Equal(birdge.ConnNum(), 0)
 }
+
+func Test_L2L_1(t *testing.T) {
+	as := assert.New(t, true)
+
+	ll := new(L2L)
+	ll.MaxConn(0)
+	ll.KeptIdeConn(1)
+	defer ll.Close()
+
+	birdge, err := ll.Transport(addra, addrb)
+	as.NotError(err)
+	defer birdge.Close()
+
+	addra.Local = ll.alisten.Addr()
+	addrb.Local = ll.blisten.Addr()
+
+	go func() {
+		defer birdge.Close()
+
+		conna, err := net.Dial(addra.Network, addra.Local.String())
+		as.NotError(err)
+		defer conna.Close()
+
+		connb, err := net.Dial(addrb.Network, addrb.Local.String())
+		as.NotError(err)
+		defer connb.Close()
+
+		// 发送
+		b := make([]byte, 10)
+		rand.Reader.Read(b)
+		conna.Write(b)
+
+		connb.SetReadDeadline(time.Now().Add(time.Second))
+		p := make([]byte, 10)
+		n, err := connb.Read(p)
+		as.NotError(err).Equal(b[:n], p[:n])
+	}()
+
+	birdge.Swap()
+	time.Sleep(time.Second)
+	as.Equal(birdge.ConnNum(), 0)
+}
