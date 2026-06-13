@@ -3,366 +3,236 @@ package vforward
 import (
 	"context"
 	"errors"
-	"io"
-	"log"
 	"net"
-	"sync/atomic"
+	"sync"
+	"sync/atomic" // 引入 atomic 包
 	"time"
 
-	"github.com/456vv/vconnpool/v2"
-	"github.com/456vv/vmap/v2"
+	"github.com/456vv/vconnpool/v3"
 	"github.com/libp2p/go-reuseport"
 )
 
-// D2DSwap 数据交换
+// D2DSwap 数据交换处理器
 type D2DSwap struct {
-	Verify func(a, b net.Conn) (net.Conn, net.Conn, error) // 数据交换前对双方连接操作，可以现实验证之类
-	dd     *D2D                                            // 引用父结构体 D2D
-	conns  vmap.Map                                        // 连接存储，方便关闭已经连接的连接
-	closed atomicBool                                      // 关闭
-	used   atomicBool                                      // 正在使用中
+	aAddr       net.Addr
+	acp         *vconnpool.Pool
+	bAddr       net.Addr
+	bcp         *vconnpool.Pool
+	dd          *D2D
+	ctx         context.Context
+	conns       sync.Map // 代替 vmap，使用原生线程安全Map
+	wg          sync.WaitGroup
+	closed      atomic.Bool
+	runed       atomic.Bool
+	connCounter atomic.Int64 // 补充：用于统计活跃连接数
 }
 
-// ConnNum 当前正在转发的连接数量
-//
-//	int     实时连接数量
-func (T *D2DSwap) ConnNum() int {
-	var i int = int(atomic.LoadInt32(&T.dd.currUseConn))
-	// 1个等1个
-	// 2个等1个
-	// 3个等2个
-	// 4个等2个
-	// 5个等3个
-	return (i / 2) + (i % 2)
+func (T *D2DSwap) ConnNum() int32 {
+	return int32(T.connCounter.Load())
 }
 
-// Swap 开始数据交换，它是从连接池中读出空闲连接，进行双方交换数据。
-// 如果你关闭了交换，只是临时关闭的。还可以再次调用Swap。
-// 永远关闭需要调用 D2D.Close() 的关闭。
-//
-//	error       错误
+// Swap 开始交换数据
 func (T *D2DSwap) Swap() error {
-	if T.used.setTrue() {
-		return errors.New("vforward: 交换数据已经开启不需重复调用")
+	if T.runed.Swap(true) {
+		return errors.New("vforward: 交换服务已在运行")
 	}
-	T.closed.setFalse()
-
-	var (
-		wait    time.Duration
-		maxWait = T.dd.TryConnTime
-	)
-	if maxWait == 0 {
-		maxWait = time.Second
-	}
-	for {
-		// 程序退出
-		if T.closed.isTrue() {
-			return nil
-		}
-
-		// 如果父级被关闭，则子级也执行关闭
-		if T.dd.closed.isTrue() {
-			return T.Close()
-		}
-
-		// 等待
-		if T.dd.acp.ConnNum() <= 0 || T.dd.bcp.ConnNum() <= 0 || T.dd.backPooling.isTrue() {
-			// 延时
-			wait = delay(wait, maxWait)
-			continue
-		}
-		wait = 0
-
-		atomic.AddInt32(&T.dd.currUseConn, 1)
-		conna, err := T.dd.aGetConn()
-		if err != nil {
-			atomic.AddInt32(&T.dd.currUseConn, -1)
-			continue
-		}
-
-		atomic.AddInt32(&T.dd.currUseConn, 1)
-		connb, err := T.dd.bGetConn()
-		if err != nil {
-			atomic.AddInt32(&T.dd.currUseConn, -2)
-			// 重新进池
-			if err := T.dd.acp.Put(conna, T.dd.aaddr.Remote); err != nil {
-				conna.Close()
+	var wg sync.WaitGroup
+	var notClosed1, notClosed2 bool
+	for !T.closed.Load() {
+		wg.Go(func() {
+			select {
+			case <-T.ctx.Done():
+			case notClosed1 = <-T.acp.WaitConnIdleGeq(T.aAddr, 1):
 			}
-			continue
+		})
+		wg.Go(func() {
+			select {
+			case <-T.ctx.Done():
+			case notClosed2 = <-T.bcp.WaitConnIdleGeq(T.bAddr, 1):
+			}
+		})
+		wg.Wait()
+		if !notClosed1 || !notClosed2 {
+			return errors.New("vforward: 交换服务的连接池已关闭")
 		}
 
-		go T.dataCopy(conna, connb)
+		select {
+		case <-T.ctx.Done():
+			return T.ctx.Err()
+		default:
+			if T.closed.Load() {
+				return nil
+			}
+			// 强制从池中读取出来，避免阻塞
+			ctx := context.WithValue(T.ctx, vconnpool.PriorityContextKey, false)
+			conna, err := T.acp.DialContext(ctx, T.aAddr.Network(), T.aAddr.String())
+			if err != nil {
+				continue
+			}
+
+			connb, err := T.bcp.DialContext(ctx, T.bAddr.Network(), T.bAddr.String())
+			if err != nil {
+				conna.Close()
+				continue
+			}
+
+			T.wg.Add(1)
+			T.connCounter.Add(1)
+
+			conna.Discard()
+			connb.Discard()
+			T.conns.Store(conna, connb)
+			go T.dataCopy(conna, connb)
+		}
 	}
+	return nil
 }
 
 func (T *D2DSwap) dataCopy(conna, connb net.Conn) {
-	bufSize := T.dd.ReadBufSize
-	if bufSize == 0 {
-		bufSize = DefaultReadBufSize
-	}
+	defer T.connCounter.Add(-1)
+	defer conna.Close()
+	defer connb.Close()
+	defer T.conns.Delete(conna)
 
-	defer atomic.AddInt32(&T.dd.currUseConn, -2)
-
-	if T.closed.isTrue() {
-		conna.Close()
-		connb.Close()
+	if T.closed.Load() {
+		T.wg.Done()
 		return
 	}
 
-	// 记录当前连接
-	T.conns.Set(conna, connb)
-	defer T.conns.Del(conna)
+	T.wg.Done()
 
-	//----------------------------
-	var err error
-	if T.Verify != nil {
-		conna, connb, err = T.Verify(conna, connb)
-		if err != nil {
-			T.dd.logf("验证失败: %s", err)
-			return
-		}
-	}
-
-	go func() {
-		copyData(conna, connb, bufSize)
-		conna.Close()
-	}()
-	copyData(connb, conna, bufSize)
-	connb.Close()
-}
-
-// Close 关闭数据交换 .Swap()，你还可以再次使用 .Swap() 启动。
-//
-//	error       错误
-func (T *D2DSwap) Close() error {
-	T.closed.setTrue()
-	T.conns.Range(func(k, v interface{}) bool {
-		if c, ok := k.(io.Closer); ok {
-			c.Close()
-		}
-		if c, ok := v.(io.Closer); ok {
-			c.Close()
-		}
-		return true
+	// 双向复制
+	var cpWg sync.WaitGroup
+	cpWg.Go(func() {
+		// 方向 A -> B
+		copyData(connb, conna, T.dd.BufSize)
 	})
-	T.conns.Reset()
-	T.used.setFalse()
-	return nil
+	cpWg.Go(func() {
+		// 方向 B -> A
+		copyData(conna, connb, T.dd.BufSize)
+	})
+
+	// 等待任意一端关闭
+	cpWg.Wait()
 }
 
-// D2D 内网开放端口，外网无法访问的情况下。内网使用D2D主动连接外网端口。以便外网发来数据转发到内网端口中去。
-//
-//		-------------------------------------
-//	 |     |  ←1  |   |  2→  |     |（1，A和B收到[D2D]发来连接）
-//	 |A内网|  ←4  |D2D|  ←3  |B外网|（2，B然后向[D2D]回应数据，数据将转发到A内网。）
-//	 |     |  5→  |   |  6→  |     |（3，A内网收到数据再发出数据，由[D2D]转发到B外网。）
-//		-------------------------------------
-type D2D struct {
-	TryConnTime time.Duration   // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。(默认：1s)
-	ReadBufSize int             // 交换数据缓冲大小
-	Timeout     time.Duration   // 发起连接超时
-	ErrorLog    *log.Logger     // 日志
-	Context     context.Context // 上下文
-
-	acp     vconnpool.ConnPool // A方连接池
-	aticker *time.Ticker       // A方心跳时间
-	aaddr   *Addr              // A方连接地址
-	adialer net.Dialer
-	averify func(net.Conn) bool
-
-	bcp     vconnpool.ConnPool // B方连接池
-	bticker *time.Ticker       // B方心跳时间
-	baddr   *Addr              // B方连接地址
-	bdialer net.Dialer
-	bverify func(net.Conn) bool
-
-	backPooling atomicBool // 确保连接回到池中
-
-	currUseConn int32      // 当前使用连接数量
-	closed      atomicBool // 关闭
-	used        atomicBool // 正在使用
-}
-
-// 初始化
-func (T *D2D) init() {
-	// 保持一个连接在池中
-	if T.acp.IdeConn == 0 {
-		T.acp.IdeConn = 1
-	}
-	if T.bcp.IdeConn == 0 {
-		T.bcp.IdeConn = 1
-	}
-	if T.acp.MaxConn == 0 {
-		T.acp.MaxConn = 500
-	}
-	if T.bcp.MaxConn == 0 {
-		T.bcp.MaxConn = 500
+// Close 停止数据交换并关闭所有连接
+func (T *D2DSwap) Close() error {
+	if T.closed.Swap(true) {
+		return nil
 	}
 
-	T.adialer.Control = reuseport.Control
-	T.acp.Dialer = &T.adialer
-
-	T.bdialer.Control = reuseport.Control
-	T.bcp.Dialer = &T.bdialer
-}
-
-// 限制连接最大的数量。（默认：500）
-func (T *D2D) MaxConn(n int) {
-	if n > 0 {
-		T.acp.MaxConn = n
-		T.bcp.MaxConn = n
-	}
-}
-
-// 保持一方连接数量，以备快速互相连接。(默认：1)
-func (T *D2D) KeptIdeConn(n int) {
-	if n > 0 {
-		T.acp.IdeConn = n
-		T.bcp.IdeConn = n
-	}
-}
-
-// 空闲连接超时
-func (T *D2D) IdeTimeout(d time.Duration) {
-	T.acp.IdeTimeout = d
-	T.bcp.IdeTimeout = d
-}
-
-// Transport 建立连接，支持协议类型："tcp", "tcp4","tcp6", "unix", "unixpacket"。其它还没测试支持："udp", "udp4", "udp6", "ip", "ip4", "ip6", "unixgram"
-//
-//	a, b *Addr  A，B方地址
-//	*D2DSwap    数据交换
-//	error       错误
-func (T *D2D) Transport(a, b *Addr) (*D2DSwap, error) {
-	if T.used.setTrue() {
-		return nil, errors.New("vforward: 不能重复调用 D2D.Transport")
-	}
-	T.init()
-
-	tryTime := T.TryConnTime
-	if tryTime == 0 {
-		tryTime = time.Second
-	}
-
-	// A连接
-	T.aaddr = a
-	T.aticker = time.NewTicker(tryTime)
-	T.adialer.LocalAddr = a.Local
-	go T.bufConn(T.aticker, &T.acp, a, &T.averify) // 定时处理连接池
-
-	// B连接
-	T.baddr = b
-	T.bticker = time.NewTicker(tryTime)
-	T.bdialer.LocalAddr = b.Local
-	go T.bufConn(T.bticker, &T.bcp, b, &T.bverify)
-
-	return &D2DSwap{dd: T}, nil
-}
-
-// Verify 连接第一时间完成，即验证可用后才送入池中。
-//
-// a func(net.Conn) error	验证
-// b func(net.Conn) error	验证
-func (T *D2D) Verify(a func(net.Conn) bool, b func(net.Conn) bool) {
-	T.averify = a
-	T.bverify = b
-}
-
-// Close 关闭D2D
-//
-//	error   错误
-func (T *D2D) Close() error {
-	T.closed.setTrue()
-
-	T.aticker.Stop()
-	T.bticker.Stop()
-
+	// 关闭连接池，这将导致 Swap 循环退出
 	T.acp.Close()
 	T.bcp.Close()
+
+	// 等待所有 dataCopy goroutine 完成
+	T.wg.Wait()
+
+	// 遍历并关闭所有仍在 map 中的连接，作为双重保险
+	T.conns.Range(func(k, v any) bool {
+		k.(net.Conn).Close()
+		v.(net.Conn).Close()
+		return true
+	})
+
 	return nil
 }
 
-// 当前连接数量
-func (T *D2D) currUseConns() int {
-	return int(atomic.LoadInt32(&T.currUseConn)) / 2
+// D2D 主结构体
+type D2D struct {
+	TryTime     time.Duration
+	Timeout     time.Duration
+	MaxIdleConn int
+	MaxConn     int
+	BufSize     int
 }
 
-// 快速取得连接
-func (T *D2D) aGetConn() (net.Conn, error) {
-	return T.acp.Get(T.aaddr.Remote)
+// New 创建一个新的 D2DSwap 实例
+func (T *D2D) New(ctx context.Context, a, b *Option) (*D2DSwap, error) {
+	if T.MaxConn == 0 {
+		return nil, errors.New("MaxConn cannot be zero")
+	}
+	d2ds := &D2DSwap{
+		ctx:   ctx,
+		dd:    T,
+		aAddr: a.Remote,
+		bAddr: b.Remote,
+		acp:   T.newConnPool(a),
+		bcp:   T.newConnPool(b),
+	}
+	// 启动后台连接维持 goroutine
+	go T.keepAliveLoop(ctx, d2ds.acp, a)
+	go T.keepAliveLoop(ctx, d2ds.bcp, b)
+	return d2ds, nil
 }
 
-func (T *D2D) bGetConn() (net.Conn, error) {
-	return T.bcp.Get(T.baddr.Remote)
+// newConnPool 根据 Option 创建连接池
+func (T *D2D) newConnPool(a *Option) *vconnpool.Pool {
+	cp := &vconnpool.Pool{
+		Dialer: &net.Dialer{
+			LocalAddr: a.Local,
+			Control:   reuseport.Control, // 启用 SO_REUSEPORT
+			Timeout:   T.Timeout,
+		},
+	}
+	return cp
 }
 
-// 缓冲连接，保持可用的连接数量
-func (T *D2D) bufConn(tick *time.Ticker, cp *vconnpool.ConnPool, addr *Addr, verify *func(net.Conn) bool) {
+// keepAliveLoop 维护连接池中的连接数量
+func (T *D2D) keepAliveLoop(ctx context.Context, cp *vconnpool.Pool, opt *Option) {
+	var tickerC <-chan time.Time
+	if T.TryTime > 0 {
+		ticker := time.NewTicker(T.TryTime)
+		defer ticker.Stop()
+		tickerC = ticker.C
+	}
 	for {
-		// 程序退出
-		if T.closed.isTrue() {
-			tick.Stop()
+		select {
+		case <-ctx.Done():
 			return
-		}
-
-		if _, ok := <-tick.C; !ok {
-			// 已经被关闭
-			return
-		}
-
-		if !T.saturation(cp, addr) {
-			go T.examineConn(cp, addr, verify)
+		case <-cp.WaitConnNumLeq(opt.Remote, T.MaxConn-1):
+			if tickerC != nil {
+				<-tickerC
+			}
+			// 检查当前连接数是否小于最大空闲连接数
+			if T.MaxIdleConn == 0 {
+				// MaxIdleConn为0，默认仅保留一条空闲连接。
+				// 当池中所有连接都被使用或断开时，尝试拨号一个新连接。
+				if ok := <-cp.WaitConnIdleLeq(opt.Remote, 0); !ok {
+					// 池被关闭了
+					return
+				}
+				T.dialAndPut(ctx, cp, opt)
+			} else {
+				// MaxIdleConn不为0，就保持指定数量的空闲连接。
+				// 当空闲连接数低于 MaxIdleConn-1 时（即需要补充时），尝试拨号。
+				if ok := <-cp.WaitConnIdleLeq(opt.Remote, T.MaxIdleConn-1); !ok {
+					// 池被关闭了
+					return
+				}
+				go T.dialAndPut(ctx, cp, opt) // 在 goroutine 中执行
+			}
 		}
 	}
 }
 
-func (T *D2D) saturation(cp *vconnpool.ConnPool, addr *Addr) bool {
-	// 使用连接最大限制
-	// 空闲连接达到最大限制
-	return T.currUseConns()+cp.ConnNum() >= cp.MaxConn || cp.ConnNumIde(addr.Remote.Network(), addr.Remote.String()) >= cp.IdeConn
-}
-
-func (T *D2D) examineConn(cp *vconnpool.ConnPool, addr *Addr, verify *func(net.Conn) bool) {
-	if T.saturation(cp, addr) {
-		return
-	}
-
-	var (
-		ctx    = T.Context
-		cancel context.CancelFunc
-	)
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if T.Timeout != 0 {
+// dialAndPut 拨号并放入连接池
+func (T *D2D) dialAndPut(ctx context.Context, cp *vconnpool.Pool, opt *Option) {
+	if T.Timeout > 0 {
+		var cancel func()
 		ctx, cancel = context.WithTimeout(ctx, T.Timeout)
 		defer cancel()
 	}
-	T.backPooling.setTrue()
-	defer T.backPooling.setFalse()
+
 	ctx = context.WithValue(ctx, vconnpool.PriorityContextKey, true)
-	conn, err := cp.DialContext(ctx, addr.Network, addr.Remote.String())
+	conn, err := cp.DialContext(ctx, opt.Remote.Network(), opt.Remote.String())
 	if err != nil {
-		T.logf("向远程 %s 发起请求失败: %v", addr.Remote.String(), err)
 		return
 	}
+	defer conn.Close()
 
-	conn = conn.(vconnpool.Conn).RawConn() // 不是从池中读取出来的，可以直接转
-	if *verify != nil && !(*verify)(conn) {
-		T.logf("%s 连接验证失败", conn.RemoteAddr().String())
-		conn.Close()
-		return
+	if opt.Verify != nil && !opt.Verify(conn) {
+		conn.Discard()
 	}
-
-	if T.saturation(cp, addr) {
-		conn.Close()
-		return
-	}
-	if err := cp.Put(conn, addr.Remote); err != nil {
-		conn.Close()
-	}
-}
-
-func (T *D2D) logf(format string, v ...interface{}) {
-	errLog(T.ErrorLog, format, v...)
 }
