@@ -3,9 +3,11 @@ package vforward
 import (
 	"errors"
 	"io"
-	"log"
 	"net"
+	"strings"
 	"sync"
+
+	"github.com/libp2p/go-reuseport"
 )
 
 const DefaultReadBufSize = 64 << 10 // 增加到64KB，提升大吞吐量性能
@@ -40,20 +42,16 @@ func copyData(dst io.Writer, src io.ReadCloser, bufSize int) (int64, error) {
 	return io.CopyBuffer(dst, src, make([]byte, bufSize))
 }
 
-// errLog 统一的错误日志输出函数
-func errLog(l *log.Logger, format string, v ...interface{}) {
-	if l != nil {
-		l.Printf(format, v...)
-	} else {
-		log.Printf(format, v...) // 如果未设置 Logger，则使用默认 log 包
+func connectListen(addr net.Addr) (any, error) {
+	switch addr.Network() {
+	case "tcp", "tcp4", "tcp6", "unix", "unixpacket":
+		return reuseport.Listen(addr.Network(), addr.String())
+	case "udp", "udp4", "udp6", "ip", "ip4", "ip6", "unixgram":
+		return reuseport.ListenPacket(addr.Network(), addr.String())
+	default:
+		if strings.HasPrefix(addr.Network(), "ip") && len(addr.Network()) > 3 {
+			return reuseport.ListenPacket(addr.Network(), addr.String())
+		}
 	}
-}
-
-// isClosedError 用于检查连接是否由于非异常原因关闭（例如正常关闭或EOF）
-func isClosedError(err error) bool {
-	if err == nil {
-		return false
-	}
-	// 检查是否是网络连接已关闭或EOF错误
-	return errors.Is(err, net.ErrClosed) || errors.Is(err, io.EOF)
+	return nil, errors.New("vforward: 监听地址类型是未知的")
 }

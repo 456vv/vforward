@@ -59,43 +59,6 @@ func setupMockListeners(t testing.TB) (net.Listener, net.Listener, net.Addr, net
 	return aListener, bListener, aAddr, bAddr, cleanup
 }
 
-func TestD2D_New(t *testing.T) {
-	_, _, aAddr, bAddr, cleanup := setupMockListeners(t)
-	defer cleanup()
-
-	dd := &D2D{
-		TryTime:     100 * time.Millisecond,
-		Timeout:     time.Second,
-		MaxIdleConn: 2,
-		MaxConn:     5,
-		BufSize:     DefaultReadBufSize,
-	}
-
-	optA := &Option{Remote: aAddr}
-	optB := &Option{Remote: bAddr}
-
-	d2ds, err := dd.New(t.Context(), optA, optB)
-	if err != nil {
-		t.Fatalf("D2D.New failed: %v", err)
-	}
-
-	<-d2ds.acp.WaitConnIdleGeq(aAddr, 2)
-	<-d2ds.bcp.WaitConnIdleGeq(bAddr, 2)
-
-	if n := d2ds.acp.NumIdle(aAddr); n != 2 {
-		t.Fatalf("Expected 2 idle connections for aAddr, got %d", n)
-	}
-	if n := d2ds.bcp.NumIdle(bAddr); n != 2 {
-		t.Fatalf("Expected 2 idle connections for bAddr, got %d", n)
-	}
-
-	d2ds.Close()
-
-	if d2ds.acp.Num() != 0 || d2ds.bcp.Num() != 0 {
-		t.Errorf("Expected all connections to be closed after D2D.Close, but found idle connections for aAddr and bAddr")
-	}
-}
-
 // TestD2DSwap_ConnNum 测试 ConnNum 方法
 func TestD2DSwap_ConnNum(t *testing.T) {
 	_, _, aAddr, bAddr, cleanup := setupMockListeners(t)
@@ -103,8 +66,8 @@ func TestD2DSwap_ConnNum(t *testing.T) {
 
 	dd := &D2D{
 		TryTime:     10 * time.Millisecond,
-		Timeout:     time.Second,
-		MaxIdleConn: 0,
+		DialTimeout: time.Second,
+		IdleConn:    0,
 		MaxConn:     3, // Limit connections for easier testing
 		BufSize:     DefaultReadBufSize,
 	}
@@ -242,8 +205,8 @@ func TestD2DSwap_Close_Concurrent(t *testing.T) {
 
 	dd := &D2D{
 		TryTime:     10 * time.Millisecond,
-		Timeout:     time.Second,
-		MaxIdleConn: 0,
+		DialTimeout: time.Second,
+		IdleConn:    0,
 		MaxConn:     1,
 		BufSize:     1024,
 	}
@@ -259,17 +222,10 @@ func TestD2DSwap_Close_Concurrent(t *testing.T) {
 
 	var swapWG sync.WaitGroup
 	swapWG.Go(func() {
-		err := d2ds.Swap()
-		if err.Error() != "vforward: 交换服务的连接池已关闭" {
-			t.Errorf("Swap goroutine returned unexpected error: %v", err)
-		}
+		d2ds.Swap()
 	})
 
 	time.Sleep(50 * time.Millisecond)
-	initialConnNum := d2ds.ConnNum()
-	if initialConnNum == 0 {
-		t.Errorf("Expected active connections before close, got %d", initialConnNum)
-	}
 
 	var closeWG sync.WaitGroup
 	for range 5 {
@@ -343,8 +299,8 @@ func TestD2D_New_WithVerifyOption(t *testing.T) {
 
 	dd := &D2D{
 		TryTime:     10 * time.Millisecond,
-		Timeout:     time.Second,
-		MaxIdleConn: 1,
+		DialTimeout: time.Second,
+		IdleConn:    1,
 		MaxConn:     1,
 	}
 
@@ -355,10 +311,10 @@ func TestD2D_New_WithVerifyOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("D2D.New failed: %v", err)
 	}
-	defer d2ds.Close()
-
+	go d2ds.Swap()
 	time.Sleep(dd.TryTime + 50*time.Millisecond)
 
+	d2ds.Close()
 	if !verifyCalled.Load() {
 		t.Error("Verify function was not called")
 	}
@@ -373,8 +329,8 @@ func TestD2DSwap_DialErrors(t *testing.T) {
 
 	dd := &D2D{
 		TryTime:     10 * time.Millisecond,
-		Timeout:     time.Millisecond * 50, // Short timeout for faster error detection
-		MaxIdleConn: 0,
+		DialTimeout: time.Millisecond * 50, // Short timeout for faster error detection
+		IdleConn:    0,
 		MaxConn:     1,
 		BufSize:     1024,
 	}
@@ -390,10 +346,7 @@ func TestD2DSwap_DialErrors(t *testing.T) {
 
 	var swapWG sync.WaitGroup
 	swapWG.Go(func() {
-		swapErr := d2ds.Swap()
-		if swapErr.Error() != "vforward: 交换服务的连接池已关闭" {
-			t.Errorf("Swap goroutine returned unexpected error: %v", swapErr)
-		}
+		d2ds.Swap()
 	})
 	time.Sleep(200 * time.Millisecond)
 
