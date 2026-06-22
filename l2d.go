@@ -26,6 +26,7 @@ type L2DSwap struct {
 	connsUDP sync.Map // laddrStr -> net.Conn 或 wrapper
 
 	running atomic.Bool
+	closed  atomic.Bool
 
 	// 性能优化：缓冲池
 	bufPool sync.Pool
@@ -58,15 +59,16 @@ func (T *L2DSwap) keepAvailable() {
 		select {
 		case <-T.ctx.Done():
 			return
-		case <-tickerC:
-		default:
-		}
+		case ok := <-T.cp.WaitConnIdleLeq(T.bOpt.Remote, targetIdle-1):
+			if !ok {
+				return
+			}
+			if tickerC != nil {
+				<-tickerC
+			}
 
-		if ok := <-T.cp.WaitConnIdleLeq(T.bOpt.Remote, targetIdle-1); !ok {
-			return
+			T.dialConn(ctx)
 		}
-
-		T.dialConn(ctx)
 	}
 }
 
@@ -83,22 +85,14 @@ func (T *L2DSwap) dialConn(ctx context.Context) {
 }
 
 func (T *L2DSwap) getConn(ctx context.Context) (net.Conn, error) {
-	if T.ld.DialTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, T.ld.DialTimeout)
-		defer cancel()
-	}
-
 	rconn, err := T.cp.DialContext(ctx, T.bOpt.Remote.Network(), T.bOpt.Remote.String())
 	if err != nil {
 		return nil, err
 	}
 	rconn.Discard()
-	if !rconn.IsReuseConn() {
-		if T.bOpt.Verify != nil && !T.bOpt.Verify(rconn) {
-			rconn.Close()
-			return nil, errors.New("connection verification failed")
-		}
+	if !rconn.IsReuseConn() && T.bOpt.Verify != nil && !T.bOpt.Verify(rconn) {
+		rconn.Close()
+		return nil, errors.New("connection verification failed")
 	}
 	return rconn, nil
 }
@@ -106,6 +100,10 @@ func (T *L2DSwap) getConn(ctx context.Context) (net.Conn, error) {
 // tcp
 func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
 	defer lconn.Close()
+
+	if T.ctx.Err() != nil {
+		return
+	}
 
 	if T.ld.MaxConn > 0 && T.connCount.Load() >= int32(T.ld.MaxConn) {
 		return
@@ -144,17 +142,11 @@ func (T *L2DSwap) connRemoteTCP(lconn net.Conn) {
 
 // udp
 func (T *L2DSwap) connReadReply(laddr net.Addr, lconn net.PacketConn, rconn net.Conn) {
-	// 没有超时是危险的，连接不会断开，默认一分钟超时
-	timeout := T.ld.ReadTimeout
-	if timeout <= 0 {
-		timeout = time.Minute
-	}
-
 	buf := T.getBuf()
 	defer T.putBuf(buf)
 	for {
 		// 设置UDP读取超时，由于UDP是无连接，无法知道对方状态
-		if err := rconn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		if err := rconn.SetReadDeadline(time.Now().Add(time.Second * 5)); err != nil {
 			return
 		}
 		// 读取数据
@@ -200,7 +192,6 @@ func (T *L2DSwap) connRemoteUDP(buf []byte, laddr net.Addr, lconn net.PacketConn
 	if T.ctx.Err() != nil {
 		return
 	}
-
 	rconn.Write(buf)
 	T.connReadReply(laddr, lconn, rconn)
 }
@@ -226,7 +217,22 @@ func (T *L2DSwap) acceptConn(listen any) error {
 				if errors.Is(err, net.ErrClosed) || T.ctx.Err() != nil {
 					return nil // 正常关闭
 				}
+				if ne, ok := err.(net.Error); ok && ne.Temporary() {
+					time.Sleep(5 * time.Millisecond)
+					continue
+				}
 				return err
+			}
+			if T.ctx.Err() != nil {
+				conn.Close()
+				return nil
+			}
+
+			// 优化：为TCP连接设置KeepAlive，提高长连接稳定性
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				tcpConn.SetKeepAlive(true)
+				tcpConn.SetKeepAlivePeriod(30 * time.Second)
+				tcpConn.SetNoDelay(true)
 			}
 			go T.examineConn(conn)
 		}
@@ -235,13 +241,13 @@ func (T *L2DSwap) acceptConn(listen any) error {
 			buf := T.getBuf()
 			n, laddr, err := l.ReadFrom(buf)
 			if err != nil {
-				if n > 0 {
-					T.connRemoteUDP(buf[:n], laddr, l)
-				}
 				if errors.Is(err, net.ErrClosed) || T.ctx.Err() != nil {
 					return nil
 				}
 				return err
+			}
+			if T.ctx.Err() != nil {
+				return nil
 			}
 			if n > 0 {
 				go T.connRemoteUDP(buf[:n], laddr, l)
@@ -279,8 +285,8 @@ func (T *L2DSwap) Swap() error {
 }
 
 func (T *L2DSwap) Close() error {
-	if !T.running.Load() {
-		return errors.New("vforward: 交换数据未开启无法关闭")
+	if T.closed.Swap(true) {
+		return nil
 	}
 
 	T.cancel()
@@ -312,20 +318,22 @@ func (T *L2DSwap) Close() error {
 }
 
 type L2D struct {
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	DialTimeout  time.Duration
-	MaxConn      int
-	IdleConn     int
-	IdleTimeout  time.Duration
-	TryTime      time.Duration
-	BufSize      int
+	BufSize     int
+	TryTime     time.Duration
+	DialTimeout time.Duration
+	MaxConn     int
+	IdleConn    int
+	IdleTimeout time.Duration
 }
 
 func (T L2D) New(ctx context.Context, a, b *Option) (*L2DSwap, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if a == nil || b == nil || a.Local == nil || b.Remote == nil {
+		return nil, errors.New("vforward: 选项或地址不能为零")
+	}
+
 	cp := &vconnpool.Pool{
 		IdleConn:    T.IdleConn,
 		IdleTimeout: T.IdleTimeout,

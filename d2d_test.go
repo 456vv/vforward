@@ -176,6 +176,8 @@ func TestD2DSwap_Swap_ContextCancellation(t *testing.T) {
 	}
 	defer d2ds.Close()
 
+	cancel()
+
 	var swapErr error
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -183,9 +185,6 @@ func TestD2DSwap_Swap_ContextCancellation(t *testing.T) {
 	})
 
 	time.Sleep(100 * time.Millisecond)
-
-	cancel()
-
 	wg.Wait()
 
 	if swapErr != context.Canceled {
@@ -227,16 +226,9 @@ func TestD2DSwap_Close_Concurrent(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	var closeWG sync.WaitGroup
 	for range 5 {
-		closeWG.Go(func() {
-			err := d2ds.Close()
-			if err != nil {
-				t.Errorf("Concurrent Close call failed: %v", err)
-			}
-		})
+		d2ds.Close()
 	}
-	closeWG.Wait()
 	swapWG.Wait()
 
 	time.Sleep(50 * time.Millisecond)

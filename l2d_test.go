@@ -74,7 +74,7 @@ func TestL2D_New(t *testing.T) {
 		wantErr bool
 	}{
 		{"basic TCP", L2D{BufSize: 4096}, &Option{Local: getTestAddr("tcp")}, &Option{Remote: getTestAddr("tcp")}, false},
-		{"UDP", L2D{ReadTimeout: time.Second}, &Option{Local: getTestAddr("udp")}, &Option{Remote: getTestAddr("udp")}, false},
+		{"UDP", L2D{}, &Option{Local: getTestAddr("udp")}, &Option{Remote: getTestAddr("udp")}, false},
 		{"defaults", L2D{}, &Option{Local: getTestAddr("tcp")}, &Option{Remote: getTestAddr("tcp")}, false},
 	}
 
@@ -124,7 +124,7 @@ func TestL2DSwap_Swap_TCP(t *testing.T) {
 
 func TestL2DSwap_Swap_UDP(t *testing.T) {
 	as := assert.New(t, true)
-	ld := L2D{BufSize: DefaultReadBufSize, ReadTimeout: 3 * time.Second}
+	ld := L2D{BufSize: DefaultReadBufSize}
 	localAddr := getTestAddr("udp")
 	remoteAddr := getTestAddr("udp")
 	startUDPEcho(t, remoteAddr)
@@ -236,9 +236,8 @@ func TestConcurrentSwapsAndCrossCalls(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			ld := L2D{
-				BufSize:     512 + (id%4)*1024,
-				MaxConn:     5,
-				ReadTimeout: time.Second * time.Duration(1+id%3),
+				BufSize: 512 + (id%4)*1024,
+				MaxConn: 5,
 			}
 			local := getTestAddr("tcp")
 			remote := getTestAddr("tcp")

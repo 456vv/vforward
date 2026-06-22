@@ -21,7 +21,6 @@ type D2DSwap struct {
 	ctx       context.Context
 	cancel    func()
 	conns     sync.Map // 代替 vmap，使用原生线程安全Map
-	wg        sync.WaitGroup
 	closed    atomic.Bool
 	running   atomic.Bool
 	connCount atomic.Int64 // 补充：用于统计活跃连接数
@@ -38,6 +37,8 @@ func (T *D2DSwap) keepAliveLoop(ctx context.Context, cp *vconnpool.Pool, opt *Op
 		defer ticker.Stop()
 		tickerC = ticker.C
 	}
+
+	ctx = context.WithValue(ctx, vconnpool.PriorityContextKey, true)
 	for {
 		select {
 		case <-ctx.Done():
@@ -73,13 +74,6 @@ func (T *D2DSwap) keepAliveLoop(ctx context.Context, cp *vconnpool.Pool, opt *Op
 
 // dialAndPut 拨号并放入连接池
 func (T *D2DSwap) dialAndPut(ctx context.Context, cp *vconnpool.Pool, opt *Option) {
-	if T.dd.DialTimeout > 0 {
-		var cancel func()
-		ctx, cancel = context.WithTimeout(ctx, T.dd.DialTimeout)
-		defer cancel()
-	}
-
-	ctx = context.WithValue(ctx, vconnpool.PriorityContextKey, true)
 	conn, err := cp.DialContext(ctx, opt.Remote.Network(), opt.Remote.String())
 	if err != nil {
 		return
@@ -91,77 +85,71 @@ func (T *D2DSwap) dialAndPut(ctx context.Context, cp *vconnpool.Pool, opt *Optio
 	}
 }
 
-// Swap 开始交换数据
+func (T *D2DSwap) pairConnections() error {
+	for {
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			select {
+			case <-T.ctx.Done():
+			case <-T.acp.WaitConnIdleGeq(T.aOpt.Remote, 1):
+			}
+		})
+		wg.Go(func() {
+			select {
+			case <-T.ctx.Done():
+			case <-T.bcp.WaitConnIdleGeq(T.bOpt.Remote, 1):
+			}
+		})
+		wg.Wait()
+
+		if T.ctx.Err() != nil {
+			T.Close()
+			return nil
+		}
+
+		// 强制从池中读取出来，避免阻塞
+		ctx := context.WithValue(T.ctx, vconnpool.PriorityContextKey, false)
+		conna, err := T.acp.DialContext(ctx, T.aOpt.Remote.Network(), T.aOpt.Remote.String())
+		if err != nil {
+			continue
+		}
+
+		connb, err := T.bcp.DialContext(ctx, T.bOpt.Remote.Network(), T.bOpt.Remote.String())
+		if err != nil {
+			conna.Close()
+			continue
+		}
+
+		conna.Discard()
+		connb.Discard()
+		T.conns.Store(conna, connb)
+		T.connCount.Add(1)
+		go T.dataCopy(conna, connb)
+	}
+}
+
 func (T *D2DSwap) Swap() error {
 	if T.running.Swap(true) {
 		return errors.New("vforward: 交换服务已在运行")
+	}
+	if err := T.ctx.Err(); err != nil {
+		return err
 	}
 
 	// 启动后台连接维持 goroutine
 	go T.keepAliveLoop(T.ctx, T.acp, T.aOpt)
 	go T.keepAliveLoop(T.ctx, T.bcp, T.bOpt)
 
-	var wg sync.WaitGroup
-	var notClosed1, notClosed2 bool
-	for !T.closed.Load() {
-		wg.Go(func() {
-			select {
-			case <-T.ctx.Done():
-			case notClosed1 = <-T.acp.WaitConnIdleGeq(T.aOpt.Remote, 1):
-			}
-		})
-		wg.Go(func() {
-			select {
-			case <-T.ctx.Done():
-			case notClosed2 = <-T.bcp.WaitConnIdleGeq(T.bOpt.Remote, 1):
-			}
-		})
-		wg.Wait()
-		if !notClosed1 || !notClosed2 {
-			return nil
-		}
-
-		select {
-		case <-T.ctx.Done():
-			return T.ctx.Err()
-		default:
-			if T.closed.Load() {
-				return nil
-			}
-
-			// 强制从池中读取出来，避免阻塞
-			ctx := context.WithValue(T.ctx, vconnpool.PriorityContextKey, false)
-			conna, err := T.acp.DialContext(ctx, T.aOpt.Remote.Network(), T.aOpt.Remote.String())
-			if err != nil {
-				continue
-			}
-
-			connb, err := T.bcp.DialContext(ctx, T.bOpt.Remote.Network(), T.bOpt.Remote.String())
-			if err != nil {
-				conna.Close()
-				continue
-			}
-
-			T.wg.Add(1)
-			T.connCount.Add(1)
-
-			conna.Discard()
-			connb.Discard()
-			T.conns.Store(conna, connb)
-			go T.dataCopy(conna, connb)
-		}
-	}
-	return nil
+	return T.pairConnections()
 }
 
 func (T *D2DSwap) dataCopy(conna, connb net.Conn) {
+	defer T.conns.Delete(conna)
 	defer T.connCount.Add(-1)
 	defer conna.Close()
 	defer connb.Close()
-	defer T.conns.Delete(conna)
 
-	T.wg.Done()
-	if T.closed.Load() {
+	if T.ctx.Err() != nil {
 		return
 	}
 
@@ -186,12 +174,11 @@ func (T *D2DSwap) Close() error {
 		return nil
 	}
 
+	T.cancel()
+
 	// 关闭连接池，这将导致 Swap 循环退出
 	T.acp.Close()
 	T.bcp.Close()
-
-	// 等待所有 dataCopy goroutine 完成
-	T.wg.Wait()
 
 	// 遍历并关闭所有仍在 map 中的连接，作为双重保险
 	T.conns.Range(func(k, v any) bool {
@@ -205,21 +192,26 @@ func (T *D2DSwap) Close() error {
 
 // D2D 主结构体
 type D2D struct {
+	BufSize     int
 	TryTime     time.Duration
 	DialTimeout time.Duration
 	MaxConn     int
 	IdleConn    int
 	IdleTimeout time.Duration
-	BufSize     int
 }
 
 // New 创建一个新的 D2DSwap 实例
 func (T D2D) New(ctx context.Context, a, b *Option) (*D2DSwap, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if a == nil || b == nil || a.Remote == nil || b.Remote == nil {
+		return nil, errors.New("vforward: 选项或远程地址不能为零")
+	}
 	if T.MaxConn == 0 {
 		return nil, errors.New("MaxConn cannot be zero")
 	}
 	d2ds := &D2DSwap{
-		ctx:  ctx,
 		dd:   T,
 		aOpt: a,
 		bOpt: b,
@@ -227,6 +219,7 @@ func (T D2D) New(ctx context.Context, a, b *Option) (*D2DSwap, error) {
 		bcp:  T.newConnPool(b),
 	}
 
+	d2ds.ctx, d2ds.cancel = context.WithCancel(ctx)
 	return d2ds, nil
 }
 
