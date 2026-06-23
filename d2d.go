@@ -225,6 +225,9 @@ func (T D2D) New(ctx context.Context, a, b *Option) (*D2DSwap, error) {
 
 // newConnPool 根据 Option 创建连接池
 func (T D2D) newConnPool(a *Option) *vconnpool.Pool {
+	if T.DialTimeout == 0 {
+		T.DialTimeout = 30 * time.Second
+	}
 	cp := &vconnpool.Pool{
 		IdleConn:    T.IdleConn,
 		IdleTimeout: T.IdleTimeout,

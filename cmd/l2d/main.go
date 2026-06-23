@@ -36,25 +36,29 @@ var (
 func oa(v string) [][]byte {
 	vs := bytes.SplitN([]byte(v), []byte("|"), 2)
 	if len(vs) != 2 {
-		vs = append(vs, []byte(v))
+		vs = append(vs, nil)
 	}
 	return vs
 }
 
-func verify(conn net.Conn, v string) bool {
+func verify(conn net.Conn, v string, timeout time.Duration) bool {
 	if v != "" {
 		vs := oa(v)
-
+		if timeout > 0 {
+			conn.SetDeadline(time.Now().Add(timeout))
+		}
 		if _, err := conn.Write(vs[0]); err != nil {
 			conn.Close()
 			return false
 		}
 
-		p := make([]byte, len(vs[1]))
-		if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
-			conn.Close()
-			fmt.Printf("verify error, %s != %s \n", v, p[:n])
-			return false
+		if vs[1] != nil {
+			p := make([]byte, len(vs[1]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
 		}
 	}
 	return true
@@ -79,16 +83,40 @@ func main() {
 		return
 	}
 
+	ld := &vforward.L2D{
+		BufSize:  *fBufSize,
+		MaxConn:  *fMaxConn,
+		IdleConn: *fKIdleConn,
+	}
+
+	// 尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。
+	if ld.TryTime, err = time.ParseDuration(*fTryTime); err != nil {
+		log.Println(err)
+		return
+	}
+
+	// 发起连接超时
+	if ld.DialTimeout, err = time.ParseDuration(*fTimeout); err != nil {
+		log.Println(err)
+		return
+	}
+
+	// 空闲连接超时
+	if ld.IdleTimeout, err = time.ParseDuration(*fIdleTimeout); err != nil {
+		log.Println(err)
+		return
+	}
+
 	var (
 		listen = vforward.Option{
 			Verify: func(conn net.Conn) bool {
-				return verify(conn, *fAVerify)
+				return verify(conn, *fAVerify, ld.IdleTimeout)
 			},
 		}
 		dial = vforward.Option{
 			Local: &net.TCPAddr{IP: net.ParseIP(*fFromLocal), Port: 0},
 			Verify: func(conn net.Conn) bool {
-				return verify(conn, *fBVerify)
+				return verify(conn, *fBVerify, ld.IdleTimeout)
 			},
 		}
 	)
@@ -117,30 +145,6 @@ func main() {
 		}
 	default:
 		log.Printf("网络地址类型  %q 是未知的，日前仅支持：tcp/tcp4/tcp6, upd/udp4/udp6", *fNetwork)
-		return
-	}
-
-	ld := &vforward.L2D{
-		BufSize:  *fBufSize,
-		MaxConn:  *fMaxConn,
-		IdleConn: *fKIdleConn,
-	}
-
-	// 尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。
-	if ld.TryTime, err = time.ParseDuration(*fTryTime); err != nil {
-		log.Println(err)
-		return
-	}
-
-	// 发起连接超时
-	if ld.DialTimeout, err = time.ParseDuration(*fTimeout); err != nil {
-		log.Println(err)
-		return
-	}
-
-	// 空闲连接超时
-	if ld.IdleTimeout, err = time.ParseDuration(*fIdleTimeout); err != nil {
-		log.Println(err)
 		return
 	}
 

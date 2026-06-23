@@ -27,7 +27,9 @@ var bufPool = sync.Pool{
 }
 
 // copyData 优化的数据交换
-func copyData(dst io.Writer, src io.ReadCloser, bufSize int) (int64, error) {
+func copyData(dst io.WriteCloser, src io.Reader, bufSize int) (int64, error) {
+	defer dst.Close()
+
 	if bufSize == 0 {
 		bufSize = DefaultReadBufSize
 	}

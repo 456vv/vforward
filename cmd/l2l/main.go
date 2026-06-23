@@ -29,25 +29,29 @@ var (
 func oa(v string) [][]byte {
 	vs := bytes.SplitN([]byte(v), []byte("|"), 2)
 	if len(vs) != 2 {
-		vs = append(vs, []byte(v))
+		vs = append(vs, nil)
 	}
 	return vs
 }
 
-func verify(conn net.Conn, v string) bool {
+func verify(conn net.Conn, v string, timeout time.Duration) bool {
 	if v != "" {
 		vs := oa(v)
-
+		if timeout > 0 {
+			conn.SetDeadline(time.Now().Add(timeout))
+		}
 		if _, err := conn.Write(vs[0]); err != nil {
 			conn.Close()
 			return false
 		}
 
-		p := make([]byte, len(vs[1]))
-		if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
-			conn.Close()
-			fmt.Printf("verify error, %s != %s \n", v, p[:n])
-			return false
+		if vs[1] != nil {
+			p := make([]byte, len(vs[1]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
 		}
 	}
 	return true
@@ -88,18 +92,6 @@ func main() {
 		log.Println(err)
 		return
 	}
-	addra := vforward.Option{
-		Local: addr1,
-		Verify: func(conn net.Conn) bool {
-			return verify(conn, *fAVerify)
-		},
-	}
-	addrb := vforward.Option{
-		Local: addr2,
-		Verify: func(conn net.Conn) bool {
-			return verify(conn, *fBVerify)
-		},
-	}
 
 	ll := &vforward.L2L{
 		BufSize:  *fBufSize,
@@ -111,6 +103,21 @@ func main() {
 		log.Println(err)
 		return
 	}
+
+	var (
+		addra = vforward.Option{
+			Local: addr1,
+			Verify: func(conn net.Conn) bool {
+				return verify(conn, *fAVerify, ll.IdleTimeout)
+			},
+		}
+		addrb = vforward.Option{
+			Local: addr2,
+			Verify: func(conn net.Conn) bool {
+				return verify(conn, *fBVerify, ll.IdleTimeout)
+			},
+		}
+	)
 
 	lls, err := ll.New(nil, &addra, &addrb)
 	if err != nil {

@@ -1,5 +1,4 @@
-go mod tidy
-go get -u
+set CGO_ENABLED=0
 
 set GOOS=windows
 set GOARCH=amd64
@@ -22,10 +21,6 @@ set GOARCH=arm64
 go build -o bin/d2d-linux-arm64 -trimpath -ldflags="-s -w" d2d/main.go
 go build -o bin/l2d-linux-arm64 -trimpath -ldflags="-s -w" l2d/main.go
 go build -o bin/l2l-linux-arm64 -trimpath -ldflags="-s -w" l2l/main.go
-set GOARCH=mips
-go build -o bin/d2d-linux-mips -trimpath -ldflags="-s -w" d2d/main.go
-go build -o bin/l2d-linux-mips -trimpath -ldflags="-s -w" l2d/main.go
-go build -o bin/l2l-linux-mips -trimpath -ldflags="-s -w" l2l/main.go
 go clean -cache
 
 upx -9 bin/*

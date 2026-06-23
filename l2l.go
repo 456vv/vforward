@@ -26,7 +26,6 @@ type L2LSwap struct {
 	conns     sync.Map
 	connCount atomic.Int64
 	closed    atomic.Bool
-	mu        sync.Mutex
 }
 
 func (T *L2LSwap) ConnNum() int32 {
@@ -66,9 +65,6 @@ func (T *L2LSwap) LimitMaxConn(addr net.Addr) bool {
 }
 
 func (T *L2LSwap) examineConn(conn net.Conn, opt *Option, skipVerify bool) {
-	T.mu.Lock()
-	defer T.mu.Unlock()
-
 	if T.LimitMaxConn(opt.Local) {
 		conn.Close()
 		return
@@ -107,8 +103,10 @@ func (T *L2LSwap) pairConnections() error {
 			return nil
 		}
 
+		T.connCount.Add(1)
 		conna, bufa, err := T.cp.GetFull(T.aOpt.Local)
 		if err != nil {
+			T.connCount.Add(-1)
 			continue
 		}
 		if bufa != nil {
@@ -117,6 +115,7 @@ func (T *L2LSwap) pairConnections() error {
 
 		connb, bufb, err := T.cp.GetFull(T.bOpt.Local)
 		if err != nil {
+			T.connCount.Add(-1)
 			// 如果A连接存在数据，关闭连接
 			if bufa != nil {
 				conna.Close()
@@ -132,7 +131,6 @@ func (T *L2LSwap) pairConnections() error {
 		}
 
 		T.conns.Store(conna, connb)
-		T.connCount.Add(1)
 		go T.dataCopy(conna, connb)
 	}
 }
