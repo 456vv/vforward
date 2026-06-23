@@ -1,5 +1,6 @@
-# vforward [![Build Status](https://travis-ci.org/456vv/vforward.svg?branch=master)](https://travis-ci.org/456vv/vforward)
-golang vforward，TCP/UDP port forwarding，端口转发，主动连接，被动连接，大多用于内网端口反弹。
+# vforward
+实现一个简单的端口工具，端口转发，主动连接，被动连接，大多用于内网端口反弹。支持TCP和UDP协议。
+
 
 D2D 命令行：
 ====================
@@ -10,28 +11,35 @@ D2D 命令行：
     |A内网|  →  |D2D|  →  |B外网|（3，A内网收到数据再发出数据，由[D2D]转发到B外网。）
 
 #### 命令行：
-    -ARemote string
-          A端远程请求连接地址 (format "12.13.14.15:123")
-    -ALocal string
-          A端本地发起连接地址 (default "0.0.0.0")
-    -BRemote string
-          B端远程请求连接地址 (format "22.23.24.25:234")
-    -BLocal string
-          B端本地发起连接地址 (default "0.0.0.0")
-    -KeptIdeConn int
-          保持一方连接数量，以备快速互相连接。 (default 2)
-    -IdeTimeout duration
-        空闲连接超时。单位：ns, us, ms, s, m, h
-    -MaxConn int
-          限制连接最大的数量 (default 500)
-    -Network string
-          网络地址类型 (default "tcp")
-    -ReadBufSize int
-          交换数据缓冲大小。单位：字节 (default 4096)
-    -Timeout duration
-          转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h (default 5s)
-    -TryConnTime duration
-          尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。单位：ns, us, ms, s, m, h (default 500ms)
+d2d-win-amd64.exe -ARemote 127.0.0.1:4321 -BRemote 127.0.0.1:1234 -MaxConn 2
+```
+-ALocal string
+      A端本地发起连接地址 (default "0.0.0.0")
+-ARemote string
+      A端远程请求连接地址 (format "12.13.14.15:123")
+-AVerify string
+      A的验证字符串，桥接后的发出的第一条验证数据头。
+-BLocal string
+      B端本地发起连接地址 (default "0.0.0.0")
+-BRemote string
+      B端远程请求连接地址 (format "22.23.24.25:234")
+-BVerify string
+      B的验证字符串，桥接后的发出的第一条验证数据头。
+-BufSize int
+      交换数据缓冲大小。单位：字节 (default 4096)
+-IdleConn int
+      保持一方连接数量，以备快速互相连接。
+-IdleTimeout string
+      空闲连接超时。单位：ns, us, ms, s, m, h (default "10s")
+-MaxConn int
+      限制连接最大的数量
+-Network string
+      网络地址类型 (default "tcp")
+-Timeout string
+      请求远程连接超时。单位：ns, us, ms, s, m, h (default "5s")
+-TryTime string
+      尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。单位：ns, us, ms, s, m, h (default "500ms")
+```
 
 L2D
 ====================
@@ -42,21 +50,33 @@ L2D
     |A端口|  →  |L2D|  →  |B端口|（3，B然后再收到A数据）
 
 #### 命令行：
-    -FromLocal string
-          转发请求的源地址 (default "0.0.0.0")
-    -Listen string
-          本地网卡监听地址 (format "0.0.0.0:123")
-    -MaxConn int
-          限制连接最大的数量
-    -Network string
-          网络地址类型 (default "tcp")
-    -ReadBufSize int
-          交换数据缓冲大小。单位：字节 (default 4096)
-    -Timeout duration
-          转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h (default 5s)
-    -ToRemote string
-          转发请求的目地址 (format "22.23.24.25:234")
-
+l2d-win-amd64.exe -Listen 0.0.0.0:100 -ToRemote 127.0.0.1:4321
+```
+-AVerify string
+      监听端的验证字符串，收到客户端发来的验证数据头。
+-BVerify string
+      转发端的验证字符串，转发端发去出的验证数据头。
+-BufSize int
+      交换数据缓冲大小。单位：字节 (default 4096)
+-FromLocal string
+      转发请求的源地址 (default "0.0.0.0")
+-IdleConn int
+      保持一方连接数量，以备快速互相连接。
+-IdleTimeout string
+      空闲连接超时。单位：ns, us, ms, s, m, h (default "10s")
+-Listen string
+      本地网卡监听地址 (format "0.0.0.0:123")
+-MaxConn int
+      限制连接最大的数量
+-Network string
+      网络地址类型 (default "tcp")
+-Timeout string
+      请求远程连接超时。单位：ns, us, ms, s, m, h (default "5s")
+-ToRemote string
+      转发请求的目地址 (format "22.23.24.25:234")
+-TryTime string
+      尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。单位：ns, us, ms, s, m, h (default "500ms")
+```
 L2L 命令行：
 ====================
 是在公网主机上面监听两个TCP端口，由两个内网客户端连接。 L2L使这两个连接进行交换数据，达成内网到内网通道。 注意：1）双方必须主动连接公网L2L。2）不支持UDP协议。<br/>
@@ -66,76 +86,24 @@ L2L 命令行：
     |A内网|  →  |L2L|  →  |B内网|（3，A 往 B 发送数据）
 
 #### 命令行：
-    -ALocal string
-          A本地监听网卡IP地址 (format "12.13.14.15:123")
-    -BLocal string
-          B本地监听网卡IP地址 (format "22.23.24.25:234")
-    -KeptIdeConn int
-          保持一方连接数量，以备快速互相连接。 (default 2)
-    -IdeTimeout duration
-        空闲连接超时。单位：ns, us, ms, s, m, h
-    -MaxConn int
-          限制连接最大的数量
-    -Network string
-          网络地址类型 (default "tcp")
-    -ReadBufSize int
-          交换数据缓冲大小。单位：字节 (default 4096)
-    -Timeout duration
-          转发连接时候，请求远程连接超时。单位：ns, us, ms, s, m, h (default 5s)
-
-# **列表：**
-```go
-const DefaultReadBufSize int = 4096                                             // 默认交换数据缓冲大小
-type Addr struct {                                                      // 地址
-    Network       string                                                        // 网络类型
-    Local, Remote net.Addr                                                      // 本地，远程
-}
-type D2D struct {                                                       // D2D（内网to内网）
-    TryConnTime     time.Duration                                               // 尝试或发起连接时间，可能一方不在线，会一直尝试连接对方。
-    ReadBufSize     int                                                         // 交换数据缓冲大小
-    Timeout         time.Duration                                               // 发起连接超时
-    ErrorLog        *log.Logger                                                 // 日志
-    Context         context.Context                                             // 上下文
-}
-    func (dd *D2D) MaxConn(n int)                                               // 限制连接最大的数量
-    func (dd *D2D) KeptIdeConn(n int)                                           // 保持一方连接数量，以备快速互相连接。
-    func (dd *D2D) IdeTimeout(d time.Duration)                                  // 空闲连接超时
-    func (dd *D2D) Close() error                                                // 关闭
-    func (dd *D2D) Transport(a, b *Addr) (*D2DSwap, error)                      // 建立连接
-type D2DSwap struct {                                                    // D2D交换数据
-    Verify  func(a, b net.Conn) (net.Conn, net.Conn, error)                     // 数据交换前对双方连接操作，可以现实验证之类
-}
-    func (dds *D2DSwap) Close() error                                           // 关闭
-    func (dds *D2DSwap) ConnNum() int                                           // 当前连接数
-    func (dds *D2DSwap) Swap() error                                            // 开始交换
-type L2D struct {                                                        // L2D（端口转发）
-    ReadBufSize     int                                                         // 交换数据缓冲大小
-    Timeout         time.Duration                                               // 发起连接超时
-    ErrorLog        *log.Logger                                                 // 日志
-    Context         context.Context                                             // 上下文
-}
-    func (ld *L2D) MaxConn(n int)                                               // 限制连接最大的数量
-    func (ld *L2D) Close() error                                                // 关闭
-    func (ld *L2D) Transport(laddr, raddr *Addr) (*L2DSwap, error)              // 建立连接
-type L2DSwap struct {                                                     // L2D交换数据
-    Verify          func(lconn, rconn net.Conn) (net.Conn, net.Conn, error)     // 数据交换前对双方连接操作，可以现实验证之类
-}
-    func (lds *L2DSwap) Close() error                                           // 关闭
-    func (lds *L2DSwap) ConnNum() int                                           // 当前连接数
-    func (lds *L2DSwap) Swap() error                                            // 开始交换
-type L2L struct {                                                         // L2L（内网to内网）
-    ReadBufSize     int                                                         // 交换数据缓冲大小
-    ErrorLog        *log.Logger                                                 // 日志
-}
-    func (ll *L2L) MaxConn(n int)                                               // 限制连接最大的数量
-    func (ll *L2L) KeptIdeConn(n int)                                           // 保持一方连接数量，以备快速互相连接。
-    func (ll *L2L) IdeTimeout(d time.Duration)                                  // 空闲连接超时
-    func (ll *L2L) Close() error                                                // 关闭
-    func (ll *L2L) Transport(aaddr, baddr *Addr) (*L2LSwap, error)              // 建立连接
-type L2LSwap struct {                                                     // L2L交换数据
-    Verify  func(a, b net.Conn) (net.Conn, net.Conn, error)                     // 数据交换前对双方连接操作，可以现实验证之类
-}
-    func (lls *L2LSwap) Close() error                                           // 关闭
-    func (lls *L2LSwap) ConnNum() int                                           // 当前连接数
-    func (lls *L2LSwap) Swap() error                                            // 开始交换
+l2l-win-amd64.exe -ALocal 127.0.0.1:100 -BLocal 127.0.0.1:1001
+```
+-ALocal string
+      A本地监听网卡IP地址 (format "12.13.14.15:123")
+-AVerify string
+      A的验证字符串，桥接后客户端发来的验证数据头。
+-BLocal string
+      B本地监听网卡IP地址 (format "22.23.24.25:234")
+-BVerify string
+      B的验证字符串，桥接后客户端发来的验证数据头。
+-BufSize int
+      交换数据缓冲大小。单位：字节 (default 4096)
+-IdleConn int
+      保持一方连接数量，以备快速互相连接。
+-IdleTimeout string
+      空闲连接超时。单位：ns, us, ms, s, m, h (default "10s")
+-MaxConn int
+      限制连接最大的数量
+-Network string
+      网络地址类型 (default "tcp")
 ```

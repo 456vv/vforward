@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/456vv/vforward"
+	"github.com/456vv/vforward/v2"
 )
 
 var fNetwork = flag.String("Network", "tcp", "网络地址类型")
@@ -25,10 +25,44 @@ var (
 )
 
 var (
+	fTryTime     = flag.String("TryTime", "500ms", "尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。单位：ns, us, ms, s, m, h")
 	fTimeout     = flag.String("Timeout", "5s", "请求远程连接超时。单位：ns, us, ms, s, m, h")
 	fMaxConn     = flag.Int("MaxConn", 0, "限制连接最大的数量")
-	fReadBufSize = flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
+	fBufSize     = flag.Int("BufSize", 4096, "交换数据缓冲大小。单位：字节")
+	fKIdleConn   = flag.Int("IdleConn", 0, "保持一方连接数量，以备快速互相连接。")
+	fIdleTimeout = flag.String("IdleTimeout", "10s", "空闲连接超时。单位：ns, us, ms, s, m, h")
 )
+
+func oa(v string) [][]byte {
+	vs := bytes.SplitN([]byte(v), []byte("|"), 2)
+	if len(vs) != 2 {
+		vs = append(vs, nil)
+	}
+	return vs
+}
+
+func verify(conn net.Conn, v string, timeout time.Duration) bool {
+	if v != "" {
+		vs := oa(v)
+		if timeout > 0 {
+			conn.SetDeadline(time.Now().Add(timeout))
+		}
+		if _, err := conn.Write(vs[0]); err != nil {
+			conn.Close()
+			return false
+		}
+
+		if vs[1] != nil {
+			p := make([]byte, len(vs[1]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
+		}
+	}
+	return true
+}
 
 //commandline:l2d-main.exe -Listen 127.0.0.1:1201 -ToRemote 127.0.0.1:1202 -Network tcp
 func main() {
@@ -49,9 +83,42 @@ func main() {
 		return
 	}
 
+	ld := &vforward.L2D{
+		BufSize:  *fBufSize,
+		MaxConn:  *fMaxConn,
+		IdleConn: *fKIdleConn,
+	}
+
+	// 尝试或发起连接时间，可能一方不在线，会间隔尝试连接对方。
+	if ld.TryTime, err = time.ParseDuration(*fTryTime); err != nil {
+		log.Println(err)
+		return
+	}
+
+	// 发起连接超时
+	if ld.DialTimeout, err = time.ParseDuration(*fTimeout); err != nil {
+		log.Println(err)
+		return
+	}
+
+	// 空闲连接超时
+	if ld.IdleTimeout, err = time.ParseDuration(*fIdleTimeout); err != nil {
+		log.Println(err)
+		return
+	}
+
 	var (
-		listen = vforward.Addr{Network: *fNetwork}
-		dial   = vforward.Addr{Network: *fNetwork, Local: &net.TCPAddr{IP: net.ParseIP(*fFromLocal), Port: 0}}
+		listen = vforward.Option{
+			Verify: func(conn net.Conn) bool {
+				return verify(conn, *fAVerify, ld.IdleTimeout)
+			},
+		}
+		dial = vforward.Option{
+			Local: &net.TCPAddr{IP: net.ParseIP(*fFromLocal), Port: 0},
+			Verify: func(conn net.Conn) bool {
+				return verify(conn, *fBVerify, ld.IdleTimeout)
+			},
+		}
 	)
 	switch *fNetwork {
 	case "tcp", "tcp4", "tcp6":
@@ -81,64 +148,7 @@ func main() {
 		return
 	}
 
-	ld := new(vforward.L2D)
-
-	// 发起连接超时
-	if ld.Timeout, err = time.ParseDuration(*fTimeout); err != nil {
-		log.Println(err)
-		return
-	}
-	ld.ReadBufSize = *fReadBufSize // 交换数据缓冲大小
-	ld.MaxConn(*fMaxConn)
-
-	oa := func(v string) [][]byte {
-		vs := bytes.SplitN([]byte(v), []byte("|"), 2)
-		if len(vs) != 2 {
-			vs = append(vs, []byte(v))
-		}
-		return vs
-	}
-	ld.Verify(func(conn net.Conn) bool {
-		v := *fAVerify
-		if v != "" {
-			vs := oa(v)
-
-			p := make([]byte, len(vs[0]))
-			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[0]) {
-				conn.Close()
-				fmt.Printf("verify error, %s != %s \n", v, p[:n])
-				return false
-			}
-
-			if _, err := conn.Write(vs[1]); err != nil {
-				conn.Close()
-				return false
-			}
-
-		}
-		return true
-	}, func(conn net.Conn) bool {
-		v := *fBVerify
-		if v != "" {
-			vs := oa(v)
-
-			if _, err := conn.Write(vs[0]); err != nil {
-				conn.Close()
-				return false
-			}
-
-			p := make([]byte, len(vs[1]))
-			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
-				conn.Close()
-				fmt.Printf("verify error, %s != %s \n", v, p[:n])
-				return false
-			}
-		}
-		return true
-	})
-
-	defer ld.Close()
-	lds, err := ld.Transport(&listen, &dial)
+	lds, err := ld.New(nil, &listen, &dial)
 	if err != nil {
 		log.Println(err)
 		return

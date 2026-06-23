@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/456vv/vforward"
+	"github.com/456vv/vforward/v2"
 )
 
 var (
@@ -21,10 +21,41 @@ var (
 
 var (
 	fMaxConn     = flag.Int("MaxConn", 0, "限制连接最大的数量")
-	fKeptIdeConn = flag.Int("KeptIdeConn", 2, "保持一方连接数量，以备快速互相连接。")
-	fIdeTimeout  = flag.String("IdeTimeout", "0s", "空闲连接超时。单位：ns, us, ms, s, m, h")
-	fReadBufSize = flag.Int("ReadBufSize", 4096, "交换数据缓冲大小。单位：字节")
+	fIdleConn    = flag.Int("IdleConn", 0, "保持一方连接数量，以备快速互相连接。")
+	fIdleTimeout = flag.String("IdleTimeout", "10s", "空闲连接超时。单位：ns, us, ms, s, m, h")
+	fBufSize     = flag.Int("BufSize", 4096, "交换数据缓冲大小。单位：字节")
 )
+
+func oa(v string) [][]byte {
+	vs := bytes.SplitN([]byte(v), []byte("|"), 2)
+	if len(vs) != 2 {
+		vs = append(vs, nil)
+	}
+	return vs
+}
+
+func verify(conn net.Conn, v string, timeout time.Duration) bool {
+	if v != "" {
+		vs := oa(v)
+		if timeout > 0 {
+			conn.SetDeadline(time.Now().Add(timeout))
+		}
+		if _, err := conn.Write(vs[0]); err != nil {
+			conn.Close()
+			return false
+		}
+
+		if vs[1] != nil {
+			p := make([]byte, len(vs[1]))
+			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[1]) {
+				conn.Close()
+				fmt.Printf("verify error, %s != %s \n", v, p[:n])
+				return false
+			}
+		}
+	}
+	return true
+}
 
 //commandline:l2l-main.exe -ALocal 127.0.0.1:1201 -BLocal 127.0.0.1:1202 -Network tcp
 func main() {
@@ -61,61 +92,34 @@ func main() {
 		log.Println(err)
 		return
 	}
-	addra := &vforward.Addr{
-		Network: *fNetwork,
-		Local:   addr1,
-	}
-	addrb := &vforward.Addr{
-		Network: *fNetwork,
-		Local:   addr2,
-	}
 
-	ll := new(vforward.L2L)
+	ll := &vforward.L2L{
+		BufSize:  *fBufSize,
+		MaxConn:  *fMaxConn,
+		IdleConn: *fIdleConn,
+	}
 	// 空闲连接超时
-	d, err := time.ParseDuration(*fIdeTimeout)
-	if err != nil {
+	if ll.IdleTimeout, err = time.ParseDuration(*fIdleTimeout); err != nil {
 		log.Println(err)
 		return
 	}
-	ll.IdeTimeout(d)
-	ll.MaxConn(*fMaxConn)
-	ll.KeptIdeConn(*fKeptIdeConn)
-	ll.ReadBufSize = *fReadBufSize // 交换数据缓冲大小
 
-	oa := func(v string) [][]byte {
-		vs := bytes.SplitN([]byte(v), []byte("|"), 2)
-		if len(vs) != 2 {
-			vs = append(vs, []byte(v))
+	var (
+		addra = vforward.Option{
+			Local: addr1,
+			Verify: func(conn net.Conn) bool {
+				return verify(conn, *fAVerify, ll.IdleTimeout)
+			},
 		}
-		return vs
-	}
-	verify := func(conn net.Conn, v string) bool {
-		if v != "" {
-			vs := oa(v)
-
-			p := make([]byte, len(vs[0]))
-			if n, err := conn.Read(p); err != nil || !bytes.Equal(p[:n], vs[0]) {
-				conn.Close()
-				fmt.Printf("verify error, %s != %s \n", v, p[:n])
-				return false
-			}
-
-			if _, err := conn.Write(vs[1]); err != nil {
-				conn.Close()
-				return false
-			}
-
+		addrb = vforward.Option{
+			Local: addr2,
+			Verify: func(conn net.Conn) bool {
+				return verify(conn, *fBVerify, ll.IdleTimeout)
+			},
 		}
-		return true
-	}
-	ll.Verify(func(a net.Conn) bool {
-		return verify(a, *fAVerify)
-	}, func(b net.Conn) bool {
-		return verify(b, *fBVerify)
-	})
+	)
 
-	defer ll.Close()
-	lls, err := ll.Transport(addra, addrb)
+	lls, err := ll.New(nil, &addra, &addrb)
 	if err != nil {
 		log.Println(err)
 		return
